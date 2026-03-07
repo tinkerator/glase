@@ -15,11 +15,22 @@ $ go build examples/glase.go
 $ ./glase --info
 ```
 
+### First time gotchas
+
 - If this fails with an error about `libusb-1.0` not being found, try
   one of the following and then the `go build examples/glase.go`
   command again:
   - Debian: `sudo apt install libusb-1.0-0-dev pkg-config`
   - Fedora: `sudo dnf install libusb1-devel pkgconfig-pkg-config`
+- The first time you run this, you will likely get a `bad access [code -3]` error.
+  - To resolve that, create the following file with `sudo nano
+/etc/udev/rules.d/99-omni1.rules`, with this content:
+
+```
+# This rule was added for the ComMarker Omni 1 5W UV Laser device.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="9588", ATTRS{idProduct}=="9899", MODE="0666"
+```
+  - Then, to refresh the rules, run `sudo udevadm control --reload-rules` and also `sudo udevadm trigger`.
 
 ## References
 
