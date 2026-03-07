@@ -1,0 +1,40 @@
+# Glase is a package to support a ComMarker Omni 1 5W UV laser
+
+There is no official support for Linux for this laser, so I've
+developed this package and cli tool to bridge that gap in a way that
+meets my needs.
+
+## How to use
+
+Build and kick the tires (no laser activity from this first example):
+
+```
+$ git clone https://github.com/tinkerator/glase.git
+$ cd glase
+$ go build examples/glase.go
+$ ./glase --info
+```
+
+- If this fails with an error about `libusb-1.0` not being found, try
+  one of the following and then the `go build examples/glase.go`
+  command again:
+  - Debian: `sudo apt install libusb-1.0-0-dev pkg-config`
+  - Fedora: `sudo dnf install libusb1-devel pkgconfig-pkg-config`
+
+## References
+
+- The development of this code was inspired by [this
+  post](https://hackaday.com/tag/balor/) and benefited greatly from
+  the pioneering work, [Balor](https://www.bryce.pw/engraver.html).
+
+## License info
+
+The `glase` package is distributed with the same BSD 3-clause
+[license](LICENSE) as that used by
+[golang](https://golang.org/LICENSE) itself.
+
+## Reporting bugs
+
+This is a hobby project, so I can't guarantee a fix, but do use the
+[github `glase` bug
+tracker](https://github.com/tinkerator/glase/issues).
