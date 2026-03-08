@@ -15,6 +15,12 @@ $ go build examples/glase.go
 $ ./glase --info
 ```
 
+- My device is `mfg="BJJCZ" product="USBLMCV4" ...`, so I won't be
+  surprised if a different device misbehaves.
+- If you are fortunate enough to have more than one of these devices,
+  you can specify `--serial=<xxx>` on the command line to operate on a
+  specific one.
+
 ### First time gotchas
 
 - If this fails with an error about `libusb-1.0` not being found, try
@@ -37,6 +43,8 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="9588", ATTRS{idP
 - The development of this code was inspired by [this
   post](https://hackaday.com/tag/balor/) and benefited greatly from
   the pioneering work, [Balor](https://www.bryce.pw/engraver.html).
+- The excellent [meerk40t](https://github.com/meerk40t/meerk40t)
+  successor to Balor.
 
 ## License info
 
