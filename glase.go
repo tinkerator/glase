@@ -3,6 +3,7 @@
 package glase
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -29,6 +30,9 @@ var (
 	// ErrNotOpen is returned when an attempt is made to use a closed
 	// connection.
 	ErrNotOpen = errors.New("connection is not established")
+
+	// ErrInvalid provided request data is invalid.
+	ErrInvalid = errors.New("invalid request")
 )
 
 // forgetConfig cleans up any opened interface and config.
@@ -211,4 +215,83 @@ func (c *Conn) ListDevices() (list []string, err error) {
 		list = append(list, fmt.Sprintf("%3d: mfg=%q product=%q serial=%q", i, m, p, s))
 	}
 	return
+}
+
+// send sends a command to the device where the caller holds the mutex.
+func (c *Conn) send(data []byte) error {
+	if len(data) != 12 {
+		return ErrInvalid
+	}
+	for from, n := 0, 0; from < len(data); from += n {
+		var err error
+		n, err = c.out.Write(data[from:])
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func packCmdArgs(cmd Command, args []uint16) ([]byte, error) {
+	data := make([]byte, 12)
+	binary.Encode(data, binary.LittleEndian, cmd)
+	for i, a := range args {
+		if i == 5 {
+			return nil, ErrInvalid
+		}
+		binary.Encode(data[2+2*i:], binary.LittleEndian, a)
+	}
+	return data, nil
+}
+
+// Send sends a command to the device.
+func (c *Conn) Send(cmd Command, args ...uint16) error {
+	data, err := packCmdArgs(cmd, args)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.send(data)
+	return nil
+}
+
+// Command is the command type for the laser. See cmds.go for known list.
+type Command uint16
+
+// Command sends a command to the device blocks and waits for the response.
+func (c *Conn) Command(cmd Command, args ...uint16) ([]byte, error) {
+	data, err := packCmdArgs(cmd, args)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.send(data)
+	data = make([]byte, 512)
+	n, err := c.in.Read(data)
+	return data[:n], err
+}
+
+// Query executes a command and converts the response into an array of
+// uint16s.
+func (c *Conn) Query(cmd Command, args ...uint16) ([]uint16, error) {
+	data, err := c.Command(cmd, args...)
+	if err != nil {
+		return nil, err
+	}
+	ans := make([]uint16, len(data)/2)
+	binary.Decode(data, binary.LittleEndian, ans)
+	return ans, nil
+}
+
+// Int32ToUInt16 converts a signed integer (held in a uint32) into a
+// laser encoded signed integer (held in a uint16). The latter is
+// **not** a twos complement format, but a sign bit followed by 15
+// bits of absolute value.
+func Int32ToUInt16(x int32) uint16 {
+	if x < 0 {
+		return uint16((-x) | 0x8000)
+	}
+	return uint16(x)
 }

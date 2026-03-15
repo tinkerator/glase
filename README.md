@@ -45,6 +45,8 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="9588", ATTRS{idP
   the pioneering work, [Balor](https://www.bryce.pw/engraver.html).
 - The excellent [meerk40t](https://github.com/meerk40t/meerk40t)
   successor to Balor.
+  - This includes the closer relative,
+    [galvoplotter](https://github.com/meerk40t/galvoplotter)
 
 ## License info
 
