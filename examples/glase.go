@@ -13,12 +13,11 @@ import (
 var (
 	info   = flag.Bool("info", false, "list the discovered laser devices")
 	serial = flag.String("serial", "", "serial numbered device to connect to")
-	x      = flag.Int("x", 0, "together with --move set X relative offset to this value")
-	y      = flag.Int("y", 0, "together with --move set Y relative offset to this value")
-	move   = flag.Bool("move", false, "move the laser to --x --y vs the center point")
-	on     = flag.Bool("on", false, "turn on the laser")
-	off    = flag.Bool("off", false, "turn off the laser")
 	cor    = flag.String("cor", "./jcz150.cor", "correction data file")
+	scale  = flag.Float64("mm2gal", 400.0, "number of galvo units to mm")
+	gotoX  = flag.Float64("x", 0.0, "x coordinate at end of run")
+	gotoY  = flag.Float64("y", 0.0, "y coordinate at end of run")
+	circle = flag.Bool("circle", true, "step out a circle with the laser")
 )
 
 func main() {
@@ -29,7 +28,7 @@ func main() {
 		log.Fatalf("Failed to detect Omni 1 Laser: %v", err)
 	}
 	defer conn.Close()
-
+	conn.SetMM2Galvo(*scale)
 	if *info {
 		list, err := conn.ListDevices()
 		if err != nil {
@@ -53,27 +52,47 @@ func main() {
 
 	log.Printf("Connected to: %v", conn.String())
 
-	conn.GetSerial()
-	conn.GetVersion()
+	log.Printf("Serial number: %q", conn.GetSerial())
+	log.Printf("Version: %q", conn.GetVersion())
+
 	data, err := os.ReadFile(*cor)
 	if err != nil {
-		log.Fatalf("failed to read %q: %v", *cor, err)
+		log.Fatalf("Failed to read %q: %v", *cor, err)
 	}
 	if err := conn.UploadCorrections(data); err != nil {
-		log.Fatalf("failed to upload corrections %q: %v", *cor, err)
+		log.Fatalf("Failed to upload corrections %q: %v", *cor, err)
 	}
-	log.Print("correction data loaded")
-	conn.EnableLaser()
-	conn.SetControlMode(0)
-	const steps = 100
-	const ang = 2 * math.Pi / steps
-	const r = 16384.0
-	for i := 0; i < steps; i++ {
-		a := ang * float64(i)
-		x, y := r*math.Cos(a), r*math.Sin(a)
-		conn.GotoYX(y, x)
-		time.Sleep(200 * time.Millisecond)
+	log.Printf("Correction data loaded from %q", *cor)
+
+	if err := conn.EnableLaser(); err != nil {
+		log.Fatalf("Failed to enable laser: %v", err)
 	}
-	conn.GetYX()
-	conn.GotoYX(0, 0)
+	if err := conn.SetControlMode(0); err != nil {
+		log.Fatalf("Failed to set control mode: %v", err)
+	}
+
+	if *circle {
+		const steps = 100
+		const ang = 2 * math.Pi / steps
+		const r = 40.0 // mm
+		for i := 0; i < steps; i++ {
+			a := ang * float64(i)
+			x, y := r*math.Cos(a), r*math.Sin(a)
+			conn.GotoXY(x, y)
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	x, y, err := conn.GetXY()
+	if err != nil {
+		log.Fatalf("failed to read XY: %v", err)
+	}
+	log.Printf("current XY=(%f, %f)", x, y)
+	conn.GotoXY(*gotoX, *gotoY)
+	time.Sleep(500 * time.Millisecond)
+	x, y, err = conn.GetXY()
+	if err != nil {
+		log.Fatalf("failed to read XY: %v", err)
+	}
+	log.Printf("final XY=(%f, %f)", x, y)
 }

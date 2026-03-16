@@ -14,6 +14,7 @@ import (
 // Conn is the connection to the laser machine.
 type Conn struct {
 	mu       sync.Mutex
+	mm2galvo float64
 	ctx      *gousb.Context
 	devs     []*gousb.Device
 	selected int
@@ -72,6 +73,7 @@ func (c *Conn) Close() error {
 func OpenOmni1() (*Conn, error) {
 	c := &Conn{
 		ctx:      gousb.NewContext(),
+		mm2galvo: mm2galvo,
 		selected: -1,
 	}
 	var supported = []struct{ vid, pid gousb.ID }{
@@ -283,15 +285,4 @@ func (c *Conn) Query(cmd Command, args ...uint16) ([]uint16, error) {
 	ans := make([]uint16, len(data)/2)
 	binary.Decode(data, binary.LittleEndian, ans)
 	return ans, nil
-}
-
-// Int32ToUInt16 converts a signed integer (held in a uint32) into a
-// laser encoded signed integer (held in a uint16). The latter is
-// **not** a twos complement format, but a sign bit followed by 15
-// bits of absolute value.
-func Int32ToUInt16(x int32) uint16 {
-	if x < 0 {
-		return uint16((-x) | 0x8000)
-	}
-	return uint16(x)
 }

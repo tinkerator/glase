@@ -1,7 +1,6 @@
 package glase
 
 import (
-	"encoding/binary"
 	"fmt"
 	"log"
 )
@@ -68,101 +67,84 @@ const (
 )
 
 // GetSerial reads the serial number
-func (c *Conn) GetSerial() {
+func (c *Conn) GetSerial() string {
 	resp, err := c.Query(GetSerialNo)
 	if err != nil {
 		log.Fatalf("error reading serial: %v", err)
 	}
-	log.Printf("read serial %02x", resp)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sn, err := c.devs[c.selected].SerialNumber()
+	if err == nil {
+		return fmt.Sprintf("%s-%d.%d", sn, resp[2], resp[1])
+	}
+	return fmt.Sprintf("?-%d", resp[1:3])
 }
 
 // GetVersion reads the FW version of the laser
-func (c *Conn) GetVersion() {
-	resp, err := c.Query(GetSerialNo)
+func (c *Conn) GetVersion() string {
+	resp, err := c.Query(GetVersion)
 	if err != nil {
 		log.Fatalf("error reading version: %v", err)
 	}
-	log.Printf("read version %02x", resp)
+	return fmt.Sprintf("%d.%d", resp[2], resp[1])
 }
 
 // EnableLaser enables the laser
-func (c *Conn) EnableLaser() {
+func (c *Conn) EnableLaser() error {
 	resp, err := c.Query(EnableLaser)
 	if err != nil {
-		log.Fatalf("error enabling laser: %v", err)
+		return fmt.Errorf("error enabling laser: %v", err)
 	}
-	log.Printf("enable laser %02x", resp)
+	if resp[3] != 0x220 {
+		return fmt.Errorf("bad enable laser response %02x", resp)
+	}
+	return nil
 }
 
 // SetControlMode sets the laser into the specified mode.
-func (c *Conn) SetControlMode(mode uint16) {
+func (c *Conn) SetControlMode(mode uint16) error {
 	resp, err := c.Query(SetControlMode, mode)
 	if err != nil {
-		log.Fatalf("set control mode error: %v", err)
+		return fmt.Errorf("set control mode error: %v", err)
 	}
-	log.Printf("set control mode %02x", resp)
+	if resp[3] != 0x220 {
+		return fmt.Errorf("set control mode %02x", resp)
+	}
+	return nil
 }
 
-// GetYX
-func (c *Conn) GetYX() (y, x float64) {
-	resp, err := c.Query(GetPositionXY)
+// GetYX determines the mm coordinate, relative to (0,0), of the
+// laser.
+func (c *Conn) GetXY() (x, y float64, err error) {
+	var resp []uint16
+	resp, err = c.Query(GetPositionXY)
 	if err != nil {
-		log.Fatalf("get XY error: %v", err)
+		return
 	}
-	y = float64(int(resp[1]) - 0x8000)
-	x = float64(int(resp[2]) - 0x8000)
-	log.Printf("get Y=%.1f X=%.1f", y, x)
+	if resp[3] != 0x220 {
+		err = fmt.Errorf("get xy error %02x", resp)
+		return
+	}
+	c.mu.Lock()
+	y = float64(int(resp[1])-0x8000) / c.mm2galvo
+	x = float64(int(resp[2])-0x8000) / c.mm2galvo
+	c.mu.Unlock()
 	return
 }
 
 // GotoYX - conventions for the laser are very backwards.
-func (c *Conn) GotoYX(y, x float64) {
-	iY := uint16(0x8000 + y)
-	iX := uint16(0x8000 + x)
+func (c *Conn) GotoXY(x, y float64) error {
+	c.mu.Lock()
+	iY := uint16(0x8000 + y*c.mm2galvo)
+	iX := uint16(0x8000 + x*c.mm2galvo)
+	c.mu.Unlock()
 	resp, err := c.Query(GotoXY, iY, iX)
 	if err != nil {
-		log.Fatalf("goto XY error: %v", err)
+		return err
 	}
 	if resp[3] != 0x220 {
-		log.Fatalf("unexpected response %02x", resp)
+		return fmt.Errorf("goto xy error %02x", resp)
 	}
-}
-
-// UploadCorrections decodes the "jcz150.cor" content and loads it
-// into the device. The data argument is the []byte content of this
-// file which needs conversion to be loaded into the laser device.
-func (c *Conn) UploadCorrections(data []byte) error {
-	// cmd:Reset
-	ans, err := c.Query(Reset, 1)
-	if err != nil {
-		return err
-	} else if ans[3] != 0x0220 {
-		return fmt.Errorf("unexpected Reset response %04x", ans)
-	}
-	log.Printf("Reset returned %02x", ans)
-
-	// cmd:WriteCorTable
-	ans, err = c.Query(WriteCorTable, 1)
-	if err != nil {
-		return err
-	} else if ans[3] != 0x0220 {
-		return fmt.Errorf("unexpected WriteCorTable response %04x", ans)
-	}
-	log.Printf("WriteCorTable returned %02x", ans)
-
-	//  write all of the correction data (no acknowledgement)
-	suffix := uint16(0x000)
-	for i := 36; i < len(data)-4; i += 8 {
-		var n [2]int32
-		if _, err := binary.Decode(data[i:i+8], binary.LittleEndian, n[:2]); err != nil {
-			log.Fatalf("failed to decode correction data[%d:%d] %02x: %v", i, i+8, data[i:i+8], err)
-		}
-		x, y := Int32ToUInt16(n[0]), Int32ToUInt16(n[1])
-		if err := c.Send(WriteCorLine, x, y, suffix); err != nil {
-			return err
-		}
-		suffix = 1
-	}
-
 	return nil
 }
