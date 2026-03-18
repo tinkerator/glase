@@ -22,6 +22,7 @@ type Conn struct {
 	intf     *gousb.Interface
 	in       *gousb.InEndpoint
 	out      *gousb.OutEndpoint
+	x, y     float64
 }
 
 var (

@@ -3,6 +3,7 @@ package glase
 import (
 	"fmt"
 	"log"
+	"math"
 )
 
 // TODO Observed, but unknown meaning: 0x0003, 0x0008, ?
@@ -114,6 +115,13 @@ func (c *Conn) SetControlMode(mode uint16) error {
 	return nil
 }
 
+// convert galvo coordinates to x,y mm coordinates.
+func (c *Conn) fXY(ix, iy uint16) (x, y float64) {
+	x = float64(int(ix)-0x8000) / c.mm2galvo
+	y = float64(int(iy)-0x8000) / c.mm2galvo
+	return
+}
+
 // GetYX determines the mm coordinate, relative to (0,0), of the
 // laser.
 func (c *Conn) GetXY() (x, y float64, err error) {
@@ -127,19 +135,38 @@ func (c *Conn) GetXY() (x, y float64, err error) {
 		return
 	}
 	c.mu.Lock()
-	y = float64(int(resp[1])-0x8000) / c.mm2galvo
-	x = float64(int(resp[2])-0x8000) / c.mm2galvo
+	x, y = c.fXY(resp[2], resp[1])
+	c.x, c.y = x, y
 	c.mu.Unlock()
 	return
 }
 
-// GotoYX - conventions for the laser are very backwards.
+// iXY converts x,y mm coordinates into galvo coordinates.
+func (c *Conn) iXY(x, y float64) (ix, iy uint16) {
+	ix = uint16(0x8000 + x*c.mm2galvo)
+	iy = uint16(0x8000 + y*c.mm2galvo)
+	return
+}
+
+// iD computes the distance traveled in galvo units.
+func (c *Conn) iD(dx, dy float64) uint16 {
+	d := uint(c.mm2galvo * math.Sqrt(dx*dx+dy*dy))
+	id := uint16(0xffff)
+	if d < 0xffff {
+		id = uint16(d)
+	}
+	return id
+}
+
+// GotoXY - conventions for the laser are very backwards.
 func (c *Conn) GotoXY(x, y float64) error {
 	c.mu.Lock()
-	iY := uint16(0x8000 + y*c.mm2galvo)
-	iX := uint16(0x8000 + x*c.mm2galvo)
+	dx, dy := x-c.x, y-c.y
+	c.x, c.y = x, y
+	iX, iY := c.iXY(x, y)
 	c.mu.Unlock()
-	resp, err := c.Query(GotoXY, iY, iX)
+	id := c.iD(dx, dy)
+	resp, err := c.Query(GotoXY, iY, iX, 0, id)
 	if err != nil {
 		return err
 	}

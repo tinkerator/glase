@@ -2,9 +2,11 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	"zappem.net/pub/io/glase"
@@ -14,10 +16,12 @@ var (
 	info   = flag.Bool("info", false, "list the discovered laser devices")
 	serial = flag.String("serial", "", "serial numbered device to connect to")
 	cor    = flag.String("cor", "./jcz150.cor", "correction data file")
-	scale  = flag.Float64("mm2gal", 400.0, "number of galvo units to mm")
+	scale  = flag.Float64("mm2gal", 0.0, "non-zero overrides number of galvo units to mm")
 	gotoX  = flag.Float64("x", 0.0, "x coordinate at end of run")
 	gotoY  = flag.Float64("y", 0.0, "y coordinate at end of run")
-	circle = flag.Bool("circle", true, "step out a circle with the laser")
+	circle = flag.Bool("circle", false, "step out a circle with the laser")
+	decode = flag.String("decode", "", "decode the hex dump of a command list instruction")
+	dis    = flag.String("dis", "", "disassemble a stream file containing command list instructions")
 )
 
 func main() {
@@ -28,7 +32,9 @@ func main() {
 		log.Fatalf("Failed to detect Omni 1 Laser: %v", err)
 	}
 	defer conn.Close()
-	conn.SetMM2Galvo(*scale)
+	if *scale != 0 {
+		conn.SetMM2Galvo(*scale)
+	}
 	if *info {
 		list, err := conn.ListDevices()
 		if err != nil {
@@ -51,9 +57,33 @@ func main() {
 	}
 
 	log.Printf("Connected to: %v", conn.String())
-
 	log.Printf("Serial number: %q", conn.GetSerial())
 	log.Printf("Version: %q", conn.GetVersion())
+
+	if *decode != "" {
+		a, err := conn.ParseListCommand(*decode)
+		if err != nil {
+			log.Fatalf("unable to parse %q", *decode)
+		}
+		s := conn.Disassemble(a)
+		log.Printf("%q => %s", *decode, s)
+		return
+	}
+	if *dis != "" {
+		d, err := os.ReadFile(*dis)
+		if err != nil {
+			log.Fatalf("failed to read %q: %v", *dis, err)
+		}
+		for i, line := range strings.Split(string(d), "\n") {
+			a, err := conn.ParseListCommand(line)
+			if err != nil {
+				log.Fatalf("unable to parse (line %d): %q", i+1, line)
+			}
+			s := conn.Disassemble(a)
+			fmt.Printf("%5d: %q => %s\n", i, line, s)
+		}
+		return
+	}
 
 	data, err := os.ReadFile(*cor)
 	if err != nil {
