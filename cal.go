@@ -9,7 +9,8 @@ import (
 // mm2cal holds the conversion factor from mm to galvo units.
 // Roughly 0.0025 mm is a single galvo unit. This is the default,
 // but it can be overriden via a connection specific scale factor.
-const mm2galvo = 400.0
+// Weak attempt to calibrate my machine as the default.
+const mm2galvo = 406.51
 
 // Use this to override the mm2galvo scale factor for the connected
 // laser.

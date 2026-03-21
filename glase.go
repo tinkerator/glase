@@ -99,6 +99,13 @@ func OpenOmni1() (*Conn, error) {
 	return c, nil
 }
 
+func OpenSim() *Conn {
+	return &Conn{
+		mm2galvo: mm2galvo,
+		selected: -1,
+	}
+}
+
 // String displays something human readable about the connection.
 func (c *Conn) String() string {
 	if c == nil {

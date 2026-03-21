@@ -3,8 +3,8 @@ package glase
 import (
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -54,11 +54,13 @@ type argType int
 
 const (
 	atDisplacement argType = iota
+	atDistance
 	atDuration
 	atFrequency
 	atInt
 	atPower
 	atSpeed
+	atAngle
 )
 
 // Detail holds a lookup table for decoding an assembled command.
@@ -75,7 +77,7 @@ var decoder = map[uint16]Detail{
 		name:   "JumpTo",
 		desc:   "Move the laser to target a specific point without marking.",
 		opcode: JumpTo,
-		args:   []argType{atDisplacement, atDisplacement},
+		args:   []argType{atDisplacement, atDisplacement, atAngle, atDistance},
 	},
 	EndOfList: {
 		name:   "EndOfList",
@@ -92,7 +94,7 @@ var decoder = map[uint16]Detail{
 		name:   "MarkTo",
 		desc:   "Move the laser to target a specific point, lasing along the way.",
 		opcode: MarkTo,
-		args:   []argType{atDisplacement, atDisplacement},
+		args:   []argType{atDisplacement, atDisplacement, atAngle, atDistance},
 	},
 	JumpSpeed: {
 		name:   "JumpSpeed",
@@ -188,13 +190,24 @@ func (c *Conn) Disassemble(a Assembled) string {
 		if i < len(d.args) {
 			var s string
 			switch d.args[i] {
+			case atAngle:
+				if v == 0x8000 {
+					s = ">= 90 deg"
+				} else {
+					s = fmt.Sprintf("%.2f deg", float64(v)*90.0/float64(0x8000))
+				}
 			case atDisplacement:
 				x, _ := c.fXY(v, 0)
+				s = fmt.Sprintf("%.3f", x)
+			case atDistance:
+				x := float64(v) / c.mm2galvo
 				s = fmt.Sprintf("%.3f", x)
 			case atDuration:
 				s = (time.Duration(time.Microsecond) * time.Duration(v)).String()
 			case atInt:
 				s = fmt.Sprintf("%d", v)
+			case atPower:
+				s = fmt.Sprintf("%d ?", v)
 			case atSpeed:
 				x := float64(v) / c.mm2galvo * 1000
 				s = fmt.Sprintf("%.0f mm/s", x)
@@ -237,7 +250,9 @@ type List struct {
 	c        *Conn
 	mu       sync.Mutex
 	err      error
-	x, y     float64
+	pts      int
+	x0, y0   float64
+	x1, y1   float64
 	commands []Assembled
 }
 
@@ -250,25 +265,28 @@ func (c *Conn) NewList() *List {
 	}
 }
 
-// Space returns the number of entries not yet written.
-func (list *List) Space() int {
-	list.mu.Lock()
-	defer list.mu.Unlock()
-	return MaxListCommands - len(list.commands)
+// Stream sends a stream of assembled commands over the returned
+// channel. This will mutex Lock the list while streaming.
+func (list *List) Stream() <-chan Assembled {
+	as := make(chan Assembled)
+	go func() {
+		defer close(as)
+		list.mu.Lock()
+		defer list.mu.Unlock()
+		for _, a := range list.commands {
+			as <- a
+		}
+	}()
+	return as
 }
-
-// ErrFull indicates that the caller has over filled the list.
-var ErrFull = errors.New("too full")
 
 // pack packs a command sequence into a list of commands. It returns
 // list, which allows (*List).pack()s to be chained. This method is
-// called with the list mutex locked.
+// called with the list mutex locked. There is no limit when building
+// a list, although rendering the list to the laser packages lists
+// with 256 entry sub-lists, padding with an end-of-list command.
 func (list *List) pack(cmdargs ...uint16) *List {
 	var data Assembled
-	if len(list.commands) == MaxListCommands {
-		list.err = ErrFull
-		return list
-	}
 	binary.Encode(data[:], binary.LittleEndian, cmdargs)
 	list.commands = append(list.commands, data)
 	return list
@@ -278,22 +296,58 @@ func (list *List) pack(cmdargs ...uint16) *List {
 func (list *List) JumpXY(x, y float64) *List {
 	list.mu.Lock()
 	defer list.mu.Unlock()
-	dx, dy := x-list.x, y-list.y
+	dx, dy := x-list.x1, y-list.y1
 	id := list.c.iD(dx, dy)
 	iX, iY := list.c.iXY(x, y)
-	list.x, list.y = x, y
-	const angle = 0
+	angle := uint16(0)
+
+	list.pts = 1
+	list.x0, list.y0 = list.x1, list.y1
+	list.x1, list.y1 = x, y
+
 	return list.pack(JumpTo, iY, iX, angle, id)
+}
+
+// lineXY marks a line recursively not drawing any segment greater
+// than 10mm in length. This function is called locked.
+func (list *List) lineXY(x, y float64) *List {
+	var angle uint16
+	dx1, dy1 := x-list.x1, y-list.y1
+
+	if dx1*dx1+dy1*dy1 > 100.0 {
+		midX, midY := 0.5*(list.x1+x), 0.5*(list.y1+y)
+		return list.lineXY(midX, midY).lineXY(x, y)
+	}
+
+	if list.pts > 1 {
+		// Enough history to compute angle, which is
+		// proportional to any acute subtended angle between
+		// two successive line segments (reset by any jump).
+		dx0, dy0 := list.x1-list.x0, list.y1-list.y0
+		d02xd12 := (dx0*dx0 + dy0*dy0) * (dx1*dx1 + dy1*dy1)
+		if d02xd12 > 0 {
+			dot := (dx0*dx1 + dy0*dy1)
+			if theta := math.Acos(dot/math.Sqrt(d02xd12)) / math.Pi * 180.0; theta < 90 {
+				angle = uint16(math.Round(theta / 90 * 32768))
+			} else {
+				angle = 0x8000
+			}
+
+		} // else angle = 0
+	}
+	id := list.c.iD(dx1, dy1)
+	iX, iY := list.c.iXY(x, y)
+
+	list.pts++
+	list.x0, list.y0 = list.x1, list.y1
+	list.x1, list.y1 = x, y
+
+	return list.pack(MarkTo, iY, iX, angle, id)
 }
 
 // MarkXY moves the laser enabled (laser on) to (x,y) mm coordinates.
 func (list *List) MarkXY(x, y float64) *List {
 	list.mu.Lock()
 	defer list.mu.Unlock()
-	dx, dy := x-list.x, y-list.y
-	id := list.c.iD(dx, dy)
-	iX, iY := list.c.iXY(x, y)
-	list.x, list.y = x, y
-	const angle = 0
-	return list.pack(MarkTo, iY, iX, angle, id)
+	return list.lineXY(x, y)
 }
