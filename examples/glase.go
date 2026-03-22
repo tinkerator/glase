@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"zappem.net/pub/io/glase"
@@ -22,6 +24,7 @@ var (
 	gotoY  = flag.Float64("y", 0.0, "y coordinate at end of run")
 	radius = flag.Float64("radius", 5.0, "mm radius of --poly")
 	circle = flag.Bool("circle", false, "step out a circle with the laser")
+	burn   = flag.Bool("burn", false, "burn the specified --poly")
 	poly   = flag.Int("poly", 0, "draw a 2*n sided star (n>=3) around (--x,--y)")
 	decode = flag.String("decode", "", "decode the hex dump of a command list instruction")
 	dis    = flag.String("dis", "", "disassemble a stream file containing command list instructions")
@@ -33,6 +36,8 @@ func main() {
 
 	var conn *glase.Conn
 	var err error
+
+	ctx := context.Background()
 
 	if *sim {
 		conn = glase.OpenSim()
@@ -82,6 +87,7 @@ func main() {
 		log.Printf("%q => %s", *decode, s)
 		return
 	}
+
 	if *dis != "" {
 		d, err := os.ReadFile(*dis)
 		if err != nil {
@@ -100,24 +106,43 @@ func main() {
 		}
 		return
 	}
+	list := conn.NewList()
 	if *poly != 0 {
 		if *poly < 3 {
 			log.Fatalf("need --poly value >= 3, got %d", *poly)
 		}
 		theta := math.Pi / float64(*poly)
-		list := conn.NewList()
+		if *burn {
+			list, err = list.Start(glase.BasicProfile)
+		} else {
+			list, err = list.Start(glase.PointerProfile)
+		}
+		repeatFrom := list.Offset()
 		for i := 0; i <= *poly*2; i++ {
 			at := *radius
 			if i&1 == 0 {
 				at *= 0.5
 			}
 			ang := theta * float64(i)
-			if i == 0 {
+			if i == 0 || !*burn {
 				list = list.JumpXY(*gotoX+at*math.Cos(ang), *gotoY+at*math.Sin(ang))
 			} else {
 				list = list.MarkXY(*gotoX+at*math.Cos(ang), *gotoY+at*math.Sin(ang))
 			}
 		}
+		if *burn {
+			list = list.Sleep(30 * time.Microsecond)
+			list = list.DelayJumps(glase.BasicProfile.JumpDelay)
+		}
+		if !*burn {
+			n, err := list.ReplayFrom(repeatFrom, 0)
+			if err != nil {
+				log.Fatalf("failed to repeat from %d: %v", repeatFrom, err)
+			}
+			log.Printf("appended %d repetitions", n)
+		}
+	}
+	if *sim {
 		i := 0
 		for a := range list.Stream() {
 			s := conn.Disassemble(a)
@@ -125,9 +150,6 @@ func main() {
 			fmt.Printf("%5d: %q => %s\n", i, hex.EncodeToString([]byte(a[:])), s)
 		}
 		return
-	}
-	if *sim {
-		log.Print("simulation has given up because of a lack of features")
 	}
 
 	data, err := os.ReadFile(*cor)
@@ -144,6 +166,22 @@ func main() {
 	}
 	if err := conn.SetControlMode(0); err != nil {
 		log.Fatalf("Failed to set control mode: %v", err)
+	}
+
+	if list.Offset() != 0 {
+		ctx2, cancel := context.WithCancel(ctx)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := list.Run(ctx2, !*burn)
+			log.Fatalf("failure to run (--burn=%v): %v", *burn, err)
+		}()
+		log.Print("waiting to cancel %v", ctx2)
+		time.Sleep(10 * time.Second)
+		cancel()
+		wg.Wait()
+		return
 	}
 
 	if *circle {

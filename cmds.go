@@ -164,14 +164,8 @@ func (c *Conn) GotoXY(x, y float64) error {
 	dx, dy := x-c.x, y-c.y
 	c.x, c.y = x, y
 	iX, iY := c.iXY(x, y)
-	c.mu.Unlock()
 	id := c.iD(dx, dy)
-	resp, err := c.Query(GotoXY, iY, iX, 0, id)
-	if err != nil {
-		return err
-	}
-	if resp[3] != 0x220 {
-		return fmt.Errorf("goto xy error %02x", resp)
-	}
-	return nil
+	c.mu.Unlock()
+	_, err := c.Query(GotoXY, iY, iX, 0, id)
+	return err
 }

@@ -40,22 +40,29 @@ func int32ToUInt16(x int32) uint16 {
 // The data entries make up a 65x65 table.
 func (c *Conn) UploadCorrections(data []byte) error {
 	// cmd:Reset
-	ans, err := c.Query(Reset, 1)
+	_, err := c.Query(Reset, 1)
 	if err != nil {
 		return err
-	} else if ans[3] != 0x0220 {
-		return fmt.Errorf("unexpected Reset response %04x", ans)
+	}
+	c.mu.Lock()
+	status := c.status
+	c.mu.Unlock()
+	if status != 0x0220 {
+		return fmt.Errorf("unexpected Reset response %04x", status)
 	}
 
 	// cmd:WriteCorTable
-	ans, err = c.Query(WriteCorTable, 1)
-	if err != nil {
+	if _, err = c.Query(WriteCorTable, 1); err != nil {
 		return err
-	} else if ans[3] != 0x0220 {
-		return fmt.Errorf("unexpected WriteCorTable response %04x", ans)
+	}
+	c.mu.Lock()
+	status = c.status
+	c.mu.Unlock()
+	if status != 0x0220 {
+		return fmt.Errorf("unexpected WriteCorTable response %04x", status)
 	}
 
-	//  write all of the correction data (no acknowledgement)
+	//  write all of the correction data (no acknowledgment)
 	suffix := uint16(0x000)
 	for i := 36; i < len(data)-4; i += 8 {
 		var n [2]int32

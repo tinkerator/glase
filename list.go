@@ -1,9 +1,12 @@
 package glase
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"sync"
@@ -122,7 +125,7 @@ var decoder = map[uint16]Detail{
 	},
 	MarkPowerRatio: {
 		name:   "MarkPowerRatio",
-		desc:   "Set the fraction of laser power marking will use. Units unknown, assumed higher number is higher power.",
+		desc:   "For the UV laser, this is the Q-Pulse width in ns (compare to 1/freqency) for power ratio.",
 		opcode: MarkPowerRatio,
 		args:   []argType{atPower},
 	},
@@ -198,18 +201,20 @@ func (c *Conn) Disassemble(a Assembled) string {
 				}
 			case atDisplacement:
 				x, _ := c.fXY(v, 0)
-				s = fmt.Sprintf("%.3f", x)
+				s = fmt.Sprintf("%.3f mm", x)
 			case atDistance:
 				x := float64(v) / c.mm2galvo
-				s = fmt.Sprintf("%.3f", x)
+				s = fmt.Sprintf("%.3f mm", x)
 			case atDuration:
 				s = (time.Duration(time.Microsecond) * time.Duration(v)).String()
+			case atFrequency:
+				s = fmt.Sprintf("%.0f kHz", float64(v)*40/250)
 			case atInt:
 				s = fmt.Sprintf("%d", v)
 			case atPower:
-				s = fmt.Sprintf("%d ?", v)
+				s = fmt.Sprintf("%.2f ns", float64(v)/20)
 			case atSpeed:
-				x := float64(v) / c.mm2galvo * 1000
+				x := float64(v) / c.mm2galvo * 200000 / 256
 				s = fmt.Sprintf("%.0f mm/s", x)
 			default:
 				s = fmt.Sprintf("?%d", v)
@@ -292,7 +297,165 @@ func (list *List) pack(cmdargs ...uint16) *List {
 	return list
 }
 
-// JumpXY Jumps the pointer (laser off) to (x,y) mm coordinates.
+// Profile holds data on the laser settings to be used.
+type Profile struct {
+	// MarkFrequency is the kHz frequency.
+	MarkFrequency float64
+	// SetCo2FPK1 & 2 are initial power-up protections.
+	SetCo2FPK1, SetCo2FPK2 time.Duration
+	// Q-Power in ns (compare to 1/frequency) for power concentration.
+	// 1/40kHz = 25000 ns.
+	MarkPowerRatio time.Duration
+	// JumpSpeed and MarkSpeed are the mm/sec galvo movement speeds.
+	JumpSpeed, MarkSpeed float64
+	// LaserOnDelay, LaserOffDelay and PolygonDelay are latencies
+	// for dwell time at start, mid points and end of marked
+	// lines. If LaserOnDelay == 0, then get low power "pointer"
+	// mode.
+	LaserOnDelay, LaserOffDelay, PolygonDelay time.Duration
+	// JumpDelay is how long to dwell at the corners of successive
+	// lines (to allow galvos to settle).
+	JumpDelay time.Duration
+}
+
+// PointerProfile is for displaying images for alignment etc.
+var PointerProfile = Profile{
+	JumpSpeed:     3000,
+	MarkSpeed:     3000,
+	LaserOnDelay:  0,
+	LaserOffDelay: 0,
+	PolygonDelay:  0,
+	JumpDelay:     0,
+}
+
+// BasicProfile is for performing a basic burn.
+var BasicProfile = Profile{
+	MarkFrequency:  40, // kHz
+	SetCo2FPK1:     50 * time.Microsecond,
+	SetCo2FPK2:     1 * time.Microsecond,
+	MarkPowerRatio: 1 * time.Nanosecond,
+	JumpSpeed:      4000, // mm/sec
+	MarkSpeed:      200,  // mm/sec
+	LaserOnDelay:   300 * time.Microsecond,
+	LaserOffDelay:  100 * time.Microsecond,
+	PolygonDelay:   10 * time.Microsecond,
+	JumpDelay:      8 * time.Microsecond,
+}
+
+func (c *Conn) mmsSpeed(speed float64) uint16 {
+	n := uint(speed * 256 / 200000 * c.mm2galvo)
+	if n > 0xffff {
+		return 0xffff
+	}
+	return uint16(n)
+}
+
+func waitTime(wait time.Duration) uint16 {
+	n := uint(wait / time.Microsecond)
+	if n > 0xffff {
+		n = 0xffff
+	}
+	return uint16(n)
+}
+
+func kHz(freq float64) uint16 {
+	if freq < 30 {
+		freq = 30
+	} else if freq > 150 {
+		freq = 150
+	}
+	n := freq / 40 * 250
+	return uint16(n)
+}
+
+func powerRatio(power time.Duration) uint16 {
+	n := power * 20 / time.Nanosecond
+	if n > 100 {
+		n = 100 // TODO should explore what range is valid.
+	}
+	return uint16(n)
+}
+
+// Offset returns the number of command slots used so far.
+func (list *List) Offset() int {
+	list.mu.Lock()
+	defer list.mu.Unlock()
+	return len(list.commands)
+}
+
+// ErrBadReplay is returned by ReplayForm() when an attempt is made to
+// duplicate nothing or less than nothing.
+var ErrBadReplay = errors.New("unable to make copies of nothing")
+
+// ReplayFrom duplicates a series of commands from a given offset (use
+// Unused() at the right time to determine what that is) a specified
+// number of times, n. If n is 0 then as many whole copies as will fit
+// up to the next MaxListCommands boundary will be made. This function
+// edits list in-place and the returned value is the number of copies
+// made.
+func (list *List) ReplayFrom(base, n int) (int, error) {
+	list.mu.Lock()
+	defer list.mu.Unlock()
+	head := len(list.commands)
+	entries := head - base
+	if entries <= 0 {
+		return 0, ErrBadReplay
+	}
+	m := head % MaxListCommands
+	if n == 0 {
+		if m == 0 {
+			return 0, nil
+		}
+		avail := MaxListCommands - m
+		if avail < entries {
+			return 0, nil
+		}
+		n = avail / entries
+	}
+	log.Printf("room for %d copies", n)
+	for m := 0; m < n; m++ {
+		list.commands = append(list.commands, list.commands[base:head]...)
+	}
+	return n, nil
+}
+
+// Start inserts a start of lasing sequence to configure the various
+// laser settings.
+func (list *List) Start(profile Profile) (*List, error) {
+	list = list.pack(ReadyMark)
+	if profile.MarkFrequency != 0 {
+		list = list.pack(MarkFrequency, kHz(profile.MarkFrequency))
+	}
+	if profile.SetCo2FPK1 != 0 {
+		list = list.pack(SetCo2FPK, waitTime(profile.SetCo2FPK1), waitTime(profile.SetCo2FPK2))
+	}
+	if profile.MarkPowerRatio != 0 {
+		list = list.pack(MarkPowerRatio, powerRatio(profile.MarkPowerRatio))
+	}
+	list = list.pack(JumpSpeed, list.c.mmsSpeed(profile.JumpSpeed))
+	list = list.pack(MarkSpeed, list.c.mmsSpeed(profile.MarkSpeed))
+	list = list.pack(LaserOnDelay, waitTime(profile.LaserOnDelay))
+	list = list.pack(LaserOffDelay, waitTime(profile.LaserOffDelay))
+	list = list.pack(PolygonDelay, waitTime(profile.PolygonDelay))
+	list = list.pack(JumpDelay, waitTime(profile.JumpDelay))
+	return list, nil
+}
+
+// DelayJumps inserts a delay after a jump to allow the galvo to
+// settle.
+func (list *List) DelayJumps(wait time.Duration) *List {
+	return list.pack(JumpDelay, waitTime(wait))
+}
+
+// Sleep inserts a microsecond delay. Zero is interpreted as 1 usec,
+// upper bound is about 65 ms.
+func (list *List) Sleep(wait time.Duration) *List {
+	list.mu.Lock()
+	defer list.mu.Unlock()
+	return list.pack(DelayTime, waitTime(wait))
+}
+
+// JumpXY Jumps the pointer (laser mostly off) to (x,y) mm coordinates.
 func (list *List) JumpXY(x, y float64) *List {
 	list.mu.Lock()
 	defer list.mu.Unlock()
@@ -350,4 +513,89 @@ func (list *List) MarkXY(x, y float64) *List {
 	list.mu.Lock()
 	defer list.mu.Unlock()
 	return list.lineXY(x, y)
+}
+
+// Run executes a list. Optionally loop, repeating the list until
+// canceled via context.
+func (list *List) Run(ctx context.Context, loop bool) error {
+	var eol Assembled
+	binary.Encode(eol[:], binary.LittleEndian, EndOfList)
+
+	// Execute the code via this buffer.
+	buf := make([]byte, len(eol[:])*MaxListCommands)
+	as := list.Stream()
+
+	unstarted := true
+	var x, y float64
+	for ended := false; !ended; {
+		if _, err := list.c.Query(GetVersion); err != nil {
+			var status uint16
+			select {
+			case <-ctx.Done():
+				ended = true
+				// Drain channel of remaining commands.
+				for range as {
+				}
+				as = nil
+				continue
+			case <-time.After(1 * time.Millisecond):
+				list.c.mu.Lock()
+				status = list.c.status
+				list.c.mu.Unlock()
+			}
+			if (status & statusReady) == 0 {
+				continue
+			}
+		}
+		if unstarted {
+			var err error
+			if x, y, err = list.c.GetXY(); err != nil {
+				return err
+			}
+			if err := list.c.GotoXY(x, y); err != nil {
+				return err
+			}
+			unstarted = false
+		}
+		if as == nil {
+			as = list.Stream()
+		}
+		for i := 0; i < MaxListCommands; i++ {
+			offset := i * len(eol[:])
+			done := false
+			if as == nil {
+				done = true
+			} else if a, ok := <-as; !ok {
+				done = true
+				as = nil
+			} else {
+				copy(buf[offset:], a[:])
+			}
+			if done {
+				copy(buf[offset:], eol[:])
+			}
+		}
+		n, err := list.c.Write(buf)
+		if err != nil {
+			return err
+		}
+		if n != len(buf) {
+			return fmt.Errorf("unable to load data len=%d, wrote=%d", len(buf), n)
+		}
+		list.c.Query(SetEndOfList)
+		if !loop {
+			break
+		}
+	}
+	// prepare for completion
+	list.c.Query(SetEndOfList)
+	list.c.Query(SetControlMode, 1)
+	for {
+		list.c.Query(GetVersion)
+		if list.c.status&statusReady != 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return list.c.GotoXY(x, y)
 }

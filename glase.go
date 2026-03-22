@@ -11,6 +11,18 @@ import (
 	"github.com/google/gousb"
 )
 
+// Status* bits. Mostly guessed from traces.
+const (
+	// Command OK
+	statusOK uint16 = 1 << 9
+	// Accepting more list commands
+	statusReady = 1 << 5
+	// Running running commands
+	statusRunning = 1 << 2
+	// Ending sequence (?)
+	statusEnding = 1 << 1
+)
+
 // Conn is the connection to the laser machine.
 type Conn struct {
 	mu       sync.Mutex
@@ -23,6 +35,7 @@ type Conn struct {
 	in       *gousb.InEndpoint
 	out      *gousb.OutEndpoint
 	x, y     float64
+	status   uint16
 }
 
 var (
@@ -292,5 +305,10 @@ func (c *Conn) Query(cmd Command, args ...uint16) ([]uint16, error) {
 	}
 	ans := make([]uint16, len(data)/2)
 	binary.Decode(data, binary.LittleEndian, ans)
+	if len(ans) == 4 {
+		c.mu.Lock()
+		c.status = ans[3]
+		c.mu.Unlock()
+	}
 	return ans, nil
 }
