@@ -39,7 +39,6 @@ func int32ToUInt16(x int32) uint16 {
 // file which needs conversion to be loaded into the laser device.
 // The data entries make up a 65x65 table.
 func (c *Conn) UploadCorrections(data []byte) error {
-	// cmd:Reset
 	_, err := c.Query(Reset, 1)
 	if err != nil {
 		return err

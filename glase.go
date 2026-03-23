@@ -16,11 +16,11 @@ const (
 	// Command OK
 	statusOK uint16 = 1 << 9
 	// Accepting more list commands
-	statusReady = 1 << 5
+	statusReady uint16 = 1 << 5
 	// Running running commands
-	statusRunning = 1 << 2
+	statusRunning uint16 = 1 << 2
 	// Ending sequence (?)
-	statusEnding = 1 << 1
+	statusEnding uint16 = 1 << 1
 )
 
 // Conn is the connection to the laser machine.

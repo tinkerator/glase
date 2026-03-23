@@ -29,6 +29,8 @@ var (
 	decode = flag.String("decode", "", "decode the hex dump of a command list instruction")
 	dis    = flag.String("dis", "", "disassemble a stream file containing command list instructions")
 	sim    = flag.Bool("sim", false, "simulate the connection if no device is found")
+	bSpeed = flag.Float64("burn-speed", 200, "burn speed of movement mm/sec")
+	grid   = flag.Int("grid", 0, "cm grid edge size, centered at (--x,--y)")
 )
 
 func main() {
@@ -107,13 +109,63 @@ func main() {
 		return
 	}
 	list := conn.NewList()
-	if *poly != 0 {
+	if *grid != 0 {
+		// Start mm grid
+		if *burn {
+			p := glase.BasicProfile
+			p.MarkSpeed = *bSpeed * 2
+			list, err = list.Start(p)
+		} else {
+			list, err = list.Start(glase.PointerProfile)
+		}
+
+		// Mark out a mm grid with CM spaced lines at full --burn-speed
+		// and mm innards at twice --burn-speed.
+		size := 10 * *grid
+		half := float64(5 * *grid)
+		fromX := *gotoX - half
+		fromY := *gotoY - half
+		x0, x1 := fromX, fromX+float64(size)
+		y0, y1 := fromY, fromY+float64(size)
+		for i := 0; i <= size; i++ {
+			x2 := x0 + float64(i)
+			y2 := y0 + float64(i)
+			if *burn {
+				list = list.JumpXY(x0, y2).MarkXY(x1, y2).Sleep(30 * time.Microsecond)
+				list = list.JumpXY(x2, y0).MarkXY(x2, y1).Sleep(30 * time.Microsecond)
+			} else {
+				list = list.JumpXY(x0, y2).JumpXY(x1, y2)
+				list = list.JumpXY(x2, y0).JumpXY(x2, y1)
+			}
+		}
+
+		// Next burn cm grid
+		if *burn {
+			p := glase.BasicProfile
+			p.MarkSpeed = *bSpeed
+			list, err = list.Start(p)
+		}
+
+		for i := 0; i <= size; i += 10 {
+			x2 := x0 + float64(i)
+			y2 := y0 + float64(i)
+			if *burn {
+				list = list.JumpXY(x0, y2).MarkXY(x1, y2).Sleep(30 * time.Microsecond)
+				list = list.JumpXY(x2, y0).MarkXY(x2, y1).Sleep(30 * time.Microsecond)
+			} else {
+				list = list.JumpXY(x0, y2).JumpXY(x1, y2)
+				list = list.JumpXY(x2, y0).JumpXY(x2, y1)
+			}
+		}
+	} else if *poly != 0 {
 		if *poly < 3 {
 			log.Fatalf("need --poly value >= 3, got %d", *poly)
 		}
 		theta := math.Pi / float64(*poly)
 		if *burn {
-			list, err = list.Start(glase.BasicProfile)
+			p := glase.BasicProfile
+			p.MarkSpeed = *bSpeed
+			list, err = list.Start(p)
 		} else {
 			list, err = list.Start(glase.PointerProfile)
 		}
@@ -174,13 +226,18 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := list.Run(ctx2, !*burn)
-			log.Fatalf("failure to run (--burn=%v): %v", *burn, err)
+			err = list.Run(ctx2, !*burn)
 		}()
-		log.Print("waiting to cancel %v", ctx2)
-		time.Sleep(10 * time.Second)
-		cancel()
+		if !*burn {
+			log.Printf("10 seconds of preview %v", ctx2)
+			time.Sleep(10 * time.Second)
+			cancel()
+			log.Print("canceled, wait to exit")
+		}
 		wg.Wait()
+		if err != nil {
+			log.Fatalf("failure to run (--burn=%v): %v", *burn, err)
+		}
 		return
 	}
 

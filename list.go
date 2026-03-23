@@ -18,20 +18,20 @@ const MaxListCommands = 256
 
 const (
 	JumpTo          uint16 = 0x8001
-	EndOfList              = 0x8002
-	DelayTime              = 0x8004
-	MarkTo                 = 0x8005
-	JumpSpeed              = 0x8006
-	LaserOnDelay           = 0x8007
-	LaserOffDelay          = 0x8008
-	MarkFrequency          = 0x800a
-	MarkPowerRatio         = 0x800b
-	MarkSpeed              = 0x800c
-	JumpDelay              = 0x800d
-	PolygonDelay           = 0x800f
-	SetCo2FPK              = 0x801e
-	ChangeMarkCount        = 0x8023
-	ReadyMark              = 0x8051
+	EndOfList       uint16 = 0x8002
+	DelayTime       uint16 = 0x8004
+	MarkTo          uint16 = 0x8005
+	JumpSpeed       uint16 = 0x8006
+	LaserOnDelay    uint16 = 0x8007
+	LaserOffDelay   uint16 = 0x8008
+	MarkFrequency   uint16 = 0x800a
+	MarkPowerRatio  uint16 = 0x800b
+	MarkSpeed       uint16 = 0x800c
+	JumpDelay       uint16 = 0x800d
+	PolygonDelay    uint16 = 0x800f
+	SetCo2FPK       uint16 = 0x801e
+	ChangeMarkCount uint16 = 0x8023
+	ReadyMark       uint16 = 0x8051
 )
 
 var encoder = map[string]uint16{
@@ -320,8 +320,8 @@ type Profile struct {
 
 // PointerProfile is for displaying images for alignment etc.
 var PointerProfile = Profile{
-	JumpSpeed:     3000,
-	MarkSpeed:     3000,
+	JumpSpeed:     5000,
+	MarkSpeed:     5000,
 	LaserOnDelay:  0,
 	LaserOffDelay: 0,
 	PolygonDelay:  0,
@@ -330,12 +330,12 @@ var PointerProfile = Profile{
 
 // BasicProfile is for performing a basic burn.
 var BasicProfile = Profile{
-	MarkFrequency:  40, // kHz
+	MarkFrequency:  40, // kHz ~ period of 25000 ns
 	SetCo2FPK1:     50 * time.Microsecond,
 	SetCo2FPK2:     1 * time.Microsecond,
-	MarkPowerRatio: 1 * time.Nanosecond,
-	JumpSpeed:      4000, // mm/sec
-	MarkSpeed:      200,  // mm/sec
+	MarkPowerRatio: 1 * time.Nanosecond, // compare to period above.
+	JumpSpeed:      4000,                // mm/sec
+	MarkSpeed:      200,                 // mm/sec
 	LaserOnDelay:   300 * time.Microsecond,
 	LaserOffDelay:  100 * time.Microsecond,
 	PolygonDelay:   10 * time.Microsecond,
@@ -412,7 +412,6 @@ func (list *List) ReplayFrom(base, n int) (int, error) {
 		}
 		n = avail / entries
 	}
-	log.Printf("room for %d copies", n)
 	for m := 0; m < n; m++ {
 		list.commands = append(list.commands, list.commands[base:head]...)
 	}
@@ -519,49 +518,57 @@ func (list *List) MarkXY(x, y float64) *List {
 // canceled via context.
 func (list *List) Run(ctx context.Context, loop bool) error {
 	var eol Assembled
-	binary.Encode(eol[:], binary.LittleEndian, EndOfList)
+	if n, err := binary.Encode(eol[:], binary.LittleEndian, EndOfList); err != nil || n != 2 {
+		return err
+	}
 
 	// Execute the code via this buffer.
-	buf := make([]byte, len(eol[:])*MaxListCommands)
+	buf := make([]byte, len(eol)*MaxListCommands)
 	as := list.Stream()
+
+	if _, err := list.c.Query(ResetList); err != nil {
+		return fmt.Errorf("failed to reset list: %v", err)
+	}
 
 	unstarted := true
 	var x, y float64
 	for ended := false; !ended; {
 		if _, err := list.c.Query(GetVersion); err != nil {
-			var status uint16
-			select {
-			case <-ctx.Done():
-				ended = true
-				// Drain channel of remaining commands.
+			return fmt.Errorf("failed to query laser: %v", err)
+		}
+		var status uint16
+		select {
+		case <-ctx.Done():
+			ended = true
+			// Drain channel of remaining commands.
+			if as != nil {
 				for range as {
 				}
 				as = nil
-				continue
-			case <-time.After(1 * time.Millisecond):
-				list.c.mu.Lock()
-				status = list.c.status
-				list.c.mu.Unlock()
 			}
-			if (status & statusReady) == 0 {
-				continue
-			}
+			continue
+		case <-time.After(50 * time.Millisecond):
+			list.c.mu.Lock()
+			status = list.c.status
+			list.c.mu.Unlock()
+		}
+		if (status & statusReady) == 0 {
+			continue
 		}
 		if unstarted {
 			var err error
 			if x, y, err = list.c.GetXY(); err != nil {
 				return err
 			}
-			if err := list.c.GotoXY(x, y); err != nil {
-				return err
-			}
+			list.c.GotoXY(x, y)
 			unstarted = false
 		}
 		if as == nil {
+			log.Print("restart stream")
 			as = list.Stream()
 		}
 		for i := 0; i < MaxListCommands; i++ {
-			offset := i * len(eol[:])
+			offset := i * len(eol)
 			done := false
 			if as == nil {
 				done = true
@@ -575,6 +582,7 @@ func (list *List) Run(ctx context.Context, loop bool) error {
 				copy(buf[offset:], eol[:])
 			}
 		}
+		log.Print("display section")
 		n, err := list.c.Write(buf)
 		if err != nil {
 			return err
@@ -583,19 +591,24 @@ func (list *List) Run(ctx context.Context, loop bool) error {
 			return fmt.Errorf("unable to load data len=%d, wrote=%d", len(buf), n)
 		}
 		list.c.Query(SetEndOfList)
+		list.c.Query(ExecuteList)
 		if !loop {
 			break
 		}
 	}
-	// prepare for completion
-	list.c.Query(SetEndOfList)
-	list.c.Query(SetControlMode, 1)
+	// Wait for completion
 	for {
-		list.c.Query(GetVersion)
-		if list.c.status&statusReady != 0 {
+		if _, err := list.c.Query(GetVersion); err != nil {
+			return fmt.Errorf("error polling laser: %v", err)
+		}
+		list.c.mu.Lock()
+		status := list.c.status
+		list.c.mu.Unlock()
+		if status == (statusOK | statusReady) {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
+	list.c.Query(SetControlMode, 0)
 	return list.c.GotoXY(x, y)
 }
