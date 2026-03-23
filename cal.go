@@ -10,7 +10,7 @@ import (
 // Roughly 0.0025 mm is a single galvo unit. This is the default,
 // but it can be overriden via a connection specific scale factor.
 // Weak attempt to calibrate my machine as the default.
-const mm2galvo = 406.51
+const mm2galvo = 402.49
 
 // Use this to override the mm2galvo scale factor for the connected
 // laser.

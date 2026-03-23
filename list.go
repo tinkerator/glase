@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"strings"
 	"sync"
@@ -515,7 +514,10 @@ func (list *List) MarkXY(x, y float64) *List {
 }
 
 // Run executes a list. Optionally loop, repeating the list until
-// canceled via context.
+// canceled via context. Note: the laser control is operating with at
+// least a double buffer, and where the commands overflow the first
+// buffer, the ExecuteList command is not issued until the 2nd buffer
+// has been filled for the first time.
 func (list *List) Run(ctx context.Context, loop bool) error {
 	var eol Assembled
 	if n, err := binary.Encode(eol[:], binary.LittleEndian, EndOfList); err != nil || n != 2 {
@@ -531,8 +533,10 @@ func (list *List) Run(ctx context.Context, loop bool) error {
 	}
 
 	unstarted := true
+	restart := true
+	chunk := 0
 	var x, y float64
-	for ended := false; !ended; {
+	for ended := false; !ended; chunk++ {
 		if _, err := list.c.Query(GetVersion); err != nil {
 			return fmt.Errorf("failed to query laser: %v", err)
 		}
@@ -564,12 +568,13 @@ func (list *List) Run(ctx context.Context, loop bool) error {
 			unstarted = false
 		}
 		if as == nil {
-			log.Print("restart stream")
 			as = list.Stream()
+			chunk = 0
+			restart = true
 		}
+		done := false // Capture that the end of the list commands was reached.
 		for i := 0; i < MaxListCommands; i++ {
 			offset := i * len(eol)
-			done := false
 			if as == nil {
 				done = true
 			} else if a, ok := <-as; !ok {
@@ -582,7 +587,6 @@ func (list *List) Run(ctx context.Context, loop bool) error {
 				copy(buf[offset:], eol[:])
 			}
 		}
-		log.Print("display section")
 		n, err := list.c.Write(buf)
 		if err != nil {
 			return err
@@ -591,8 +595,13 @@ func (list *List) Run(ctx context.Context, loop bool) error {
 			return fmt.Errorf("unable to load data len=%d, wrote=%d", len(buf), n)
 		}
 		list.c.Query(SetEndOfList)
-		list.c.Query(ExecuteList)
-		if !loop {
+		if restart && (done || chunk > 0) {
+			// Take advantage of double buffering for longer lists, by
+			// only executing after the 2nd buffer is filled.
+			list.c.Query(ExecuteList)
+			restart = false
+		}
+		if done && !loop {
 			break
 		}
 	}
