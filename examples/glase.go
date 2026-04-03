@@ -1,3 +1,5 @@
+// Program glase demonstrates some of the functionality of the glase
+// package.
 package main
 
 import (
@@ -16,21 +18,22 @@ import (
 )
 
 var (
-	info   = flag.Bool("info", false, "list the discovered laser devices")
-	serial = flag.String("serial", "", "serial numbered device to connect to")
-	cor    = flag.String("cor", "./jcz150.cor", "correction data file")
-	scale  = flag.Float64("mm2gal", 0.0, "non-zero overrides number of galvo units to mm")
-	gotoX  = flag.Float64("x", 0.0, "x coordinate at end of run")
-	gotoY  = flag.Float64("y", 0.0, "y coordinate at end of run")
-	radius = flag.Float64("radius", 5.0, "mm radius of --poly")
-	circle = flag.Bool("circle", false, "step out a circle with the laser")
-	burn   = flag.Bool("burn", false, "burn the specified --poly")
-	poly   = flag.Int("poly", 0, "draw a 2*n sided star (n>=3) around (--x,--y)")
-	decode = flag.String("decode", "", "decode the hex dump of a command list instruction")
-	dis    = flag.String("dis", "", "disassemble a stream file containing command list instructions")
-	sim    = flag.Bool("sim", false, "simulate the connection if no device is found")
-	bSpeed = flag.Float64("burn-speed", 200, "burn speed of movement mm/sec")
-	grid   = flag.Int("grid", 0, "cm grid edge size, centered at (--x,--y)")
+	info      = flag.Bool("info", false, "list the discovered laser devices")
+	serial    = flag.String("serial", "", "serial numbered device to connect to")
+	cor       = flag.String("cor", "./jcz150.cor", "correction data file")
+	scale     = flag.Float64("mm2gal", 0.0, "non-zero overrides number of galvo units to mm")
+	gotoX     = flag.Float64("x", 0.0, "x coordinate at end of run")
+	gotoY     = flag.Float64("y", 0.0, "y coordinate at end of run")
+	radius    = flag.Float64("radius", 5.0, "mm radius of --poly")
+	circle    = flag.Bool("circle", false, "step out a circle with the laser")
+	burn      = flag.Bool("burn", false, "burn the specified --poly")
+	poly      = flag.Int("poly", 0, "draw a 2*n sided star (n>=3) around (--x,--y)")
+	decode    = flag.String("decode", "", "decode the hex dump of a command list instruction")
+	dis       = flag.String("dis", "", "disassemble a stream file containing command list instructions")
+	sim       = flag.Bool("sim", false, "simulate the connection if no device is found")
+	bSpeed    = flag.Float64("burn-speed", 200, "burn speed of movement mm/sec")
+	grid      = flag.Int("grid", 0, "cm grid edge size, centered at (--x,--y)")
+	calibrate = flag.Bool("calibrate", false, "renders a 65x65 pt grid of 1000 galvo unit pitch")
 )
 
 func main() {
@@ -38,6 +41,8 @@ func main() {
 
 	var conn *glase.Conn
 	var err error
+
+	defer log.Print("done.")
 
 	ctx := context.Background()
 
@@ -109,7 +114,32 @@ func main() {
 		return
 	}
 	list := conn.NewList()
-	if *grid != 0 {
+	if *calibrate {
+		if *burn {
+			p := glase.BasicProfile
+			p.MarkSpeed = *bSpeed * 2
+			list, err = list.Start(p)
+		} else {
+			list, err = list.Start(glase.PointerProfile)
+		}
+
+		// To operate in galvo units, we convert back to mm
+		// values with the current normalization.
+		mm2Galvo := conn.MM2Galvo()
+		minD := -32.0 * 1000 / mm2Galvo
+		maxD := -minD
+		for e := -32; e <= 32; e++ {
+			d := float64(e*1000) / mm2Galvo
+			if *burn {
+				list = list.JumpXY(minD, d).MarkXY(maxD, d).Sleep(30 * time.Microsecond)
+				list = list.JumpXY(d, minD).MarkXY(d, maxD).Sleep(30 * time.Microsecond)
+			} else {
+				list = list.JumpXY(minD, d).JumpXY(maxD, d)
+				list = list.JumpXY(d, minD).JumpXY(d, maxD)
+			}
+
+		}
+	} else if *grid != 0 {
 		// Start mm grid
 		if *burn {
 			p := glase.BasicProfile
@@ -194,6 +224,23 @@ func main() {
 			log.Printf("appended %d repetitions", n)
 		}
 	}
+
+	var data []byte
+	if strings.HasSuffix(*cor, ".fixup") {
+		log.Print("Loading data is ASCII fixup data, lines of: xi yi mmx mmy")
+		_, err := conn.DeriveCorrections(*cor)
+		log.Fatal("not able to continue yet: ", err)
+	} else if *cor != "" {
+		data, err = os.ReadFile(*cor)
+		if err != nil {
+			log.Fatalf("Failed to read %q: %v", *cor, err)
+		}
+		log.Printf("Correction data loaded from %q", *cor)
+	} else {
+		log.Print("WARNING: using all zeros correction file")
+		data = make([]byte, 36+65*65*8+4)
+	}
+
 	if *sim {
 		i := 0
 		for a := range list.Stream() {
@@ -204,14 +251,9 @@ func main() {
 		return
 	}
 
-	data, err := os.ReadFile(*cor)
-	if err != nil {
-		log.Fatalf("Failed to read %q: %v", *cor, err)
-	}
 	if err := conn.UploadCorrections(data); err != nil {
 		log.Fatalf("Failed to upload corrections %q: %v", *cor, err)
 	}
-	log.Printf("Correction data loaded from %q", *cor)
 
 	if err := conn.EnableLaser(); err != nil {
 		log.Fatalf("Failed to enable laser: %v", err)
