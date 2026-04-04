@@ -20,7 +20,7 @@ import (
 var (
 	info      = flag.Bool("info", false, "list the discovered laser devices")
 	serial    = flag.String("serial", "", "serial numbered device to connect to")
-	cor       = flag.String("cor", "./jcz150.cor", "correction data file")
+	cor       = flag.String("cor", "./local.fixup.cor", "correction data file (ex. jcz150.cor)")
 	scale     = flag.Float64("mm2gal", 0.0, "non-zero overrides number of galvo units to mm")
 	gotoX     = flag.Float64("x", 0.0, "x coordinate at end of run")
 	gotoY     = flag.Float64("y", 0.0, "y coordinate at end of run")
