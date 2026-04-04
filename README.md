@@ -136,11 +136,10 @@ received with your machine, make a local copy of that file with the
 
 - The development of this code was inspired by [this
   post](https://hackaday.com/tag/balor/) and benefited greatly from
-  the pioneering work, [Balor](https://www.bryce.pw/engraver.html).
+  that pioneering work, [Balor](https://www.bryce.pw/engraver.html).
 - The excellent [meerk40t](https://github.com/meerk40t/meerk40t)
   successor to Balor.
-  - This includes the closer relative,
-    [galvoplotter](https://github.com/meerk40t/galvoplotter)
+- Also [galvoplotter](https://github.com/meerk40t/galvoplotter).
 
 ## License info
 
