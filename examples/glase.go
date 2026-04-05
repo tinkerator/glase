@@ -14,7 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"zappem.net/pub/graphics/hershey"
+	"zappem.net/pub/graphics/polymark"
 	"zappem.net/pub/io/glase"
+	"zappem.net/pub/math/polygon"
 )
 
 var (
@@ -34,7 +37,158 @@ var (
 	bSpeed    = flag.Float64("burn-speed", 200, "burn speed of movement mm/sec")
 	grid      = flag.Int("grid", 0, "cm grid edge size, centered at (--x,--y)")
 	calibrate = flag.Bool("calibrate", false, "renders a 65x65 pt grid of 1000 galvo unit pitch")
+	banner    = flag.String("banner", "", "text to render, centered at (--x,--y) with --font and --size")
+	font      = flag.String("font", "rowmand", "hershey font to use for --banner")
+	size      = flag.Float64("size", 15.0, "mm size of --banner font to use")
+	scribe    = flag.Float64("scribe", 0.02, "mm width of raw laser mark")
+	preview   = flag.Duration("preview", 10*time.Second, "time to preview marks")
+	hatch     = flag.Float64("hatch", 0.0, "non-zero mm spacing for hatch marks (--burn fill for --banner text)")
+	bb        = flag.Bool("bb", false, "just display the bounding box instead of --banner text")
+	laser     = flag.Bool("laser", false, "burn a laser icon of --size at (--x,--y)")
+	regen     = flag.Bool("regen", false, "write new correction file, named by extending --cor name")
 )
+
+// polystoList renders polygon Shapes with a list of laser commands.
+func polysToList(list *glase.List, polys *polygon.Shapes) *glase.List {
+	ll, tr := polys.BB()
+	if ll.X < -80 || ll.Y < -80 || tr.X > 80 || tr.Y > 80 {
+		log.Fatalf("Polygons too large to render. Bounding-box: %.2f <-> %.2f", ll, tr)
+	} else if ll.X < -75 || ll.Y < -75 || tr.X > 75 || tr.Y > 75 {
+		log.Printf("WARNING: coordinates unstable at edges of polygons. Bounding-box: %.2f <-> %.2f", ll, tr)
+	}
+	polys.Union()
+	var err error
+	if *burn {
+		p := glase.BasicProfile
+		p.MarkSpeed = *bSpeed
+		list, err = list.Start(p)
+	} else {
+		list, err = list.Start(glase.PointerProfile)
+		if err == nil && *bb {
+			repeatFrom := list.Offset()
+			list = list.JumpXY(ll.X, ll.Y).JumpXY(ll.X, tr.Y).JumpXY(tr.X, tr.Y).JumpXY(tr.X, ll.Y)
+			n, err := list.ReplayFrom(repeatFrom, 0)
+			if err != nil {
+				log.Fatalf("Failed to repeat from %d: %v", repeatFrom, err)
+			}
+			log.Printf("Appended %d repetitions", n)
+			return list
+		}
+	}
+	if err != nil {
+		log.Fatalf("Encountered error: %v", err)
+	}
+	if *hatch != 0 && *burn {
+		var holes []int
+		var shapes []int
+		for i, p := range polys.P {
+			if p.Hole {
+				holes = append(holes, i)
+			} else {
+				shapes = append(shapes, i)
+			}
+		}
+		for _, i := range shapes {
+			lines, err := polys.Slice(i, *hatch, holes...)
+			if err != nil {
+				log.Fatalf("Failed to x-hatch laser icon %d: %v", i, err)
+			}
+			for _, line := range lines {
+				list = list.JumpXY(line.From.X, line.From.Y).MarkXY(line.To.X, line.To.Y).Sleep(30 * time.Microsecond)
+			}
+			lines, err = polys.VSlice(i, *hatch, holes...)
+			if err != nil {
+				log.Fatalf("Failed to y-hatch laser icon %d: %v", i, err)
+			}
+			for _, line := range lines {
+				list = list.JumpXY(line.From.X, line.From.Y).MarkXY(line.To.X, line.To.Y).Sleep(30 * time.Microsecond)
+			}
+		}
+	}
+	for _, p := range polys.P {
+		for i := 0; i <= len(p.PS); i++ {
+			var pt polygon.Point
+			if i < len(p.PS) {
+				pt = p.PS[i]
+			} else {
+				pt = p.PS[0]
+			}
+			if i == 0 || !*burn {
+				list = list.JumpXY(pt.X, pt.Y)
+			} else {
+				list = list.MarkXY(pt.X, pt.Y)
+			}
+		}
+		if *burn {
+			list = list.Sleep(30 * time.Microsecond)
+		}
+	}
+	return list
+}
+
+// renderLaser burns a laser warning sign (just the rays in a triangle).
+func renderLaser(list *glase.List, size float64) *glase.List {
+	pen := &polymark.Pen{
+		Scribe:  *scribe,
+		Reflect: true,
+	}
+	// Triangle
+	dX := size / 2
+	rt3 := math.Sqrt(3.0)
+	dY := rt3 * dX
+	dYlow := dX / rt3
+	border := size / 40
+	cX := *gotoX
+	cY := *gotoY
+	ang := math.Pi / 12
+	polys := pen.Line(nil, []polygon.Point{
+		{cX - dX, cY - dYlow},
+		{cX + dX, cY - dYlow},
+		{cX, cY + dY - dYlow},
+		{cX - dX, cY - dYlow},
+	}, 2*border, true, true)
+	list = polysToList(list, polys)
+
+	// circle
+	polys = pen.Circle(nil, polygon.Point{cX, cY}, 3*border)
+	sR := 6 * border
+	lR := 8 * border
+	for i := 0; i < 24; i++ {
+		// larger rays
+		r := lR
+		switch i % 2 {
+		case 0:
+			if i == 0 {
+				// rightward ray
+				r = dX*2/3 - border
+			}
+		case 1:
+			// smaller rays
+			r = sR
+		}
+		alpha := float64(i) * ang
+		rX, rY := r*math.Cos(alpha), r*math.Sin(alpha)
+		polys = pen.Line(polys, []polygon.Point{
+			{cX, cY},
+			{cX + rX, cY + rY},
+		}, border*.5, false, false)
+	}
+	return polysToList(list, polys)
+}
+
+// Render text at desired coordinates of desired font and scale.
+func renderBanner(list *glase.List, banner string) *glase.List {
+	fnt, err := hershey.New(*font)
+	if err != nil {
+		log.Fatalf("Failed to load font %q: %v", *font, err)
+	}
+	pen := &polymark.Pen{
+		Scribe:  *scribe,
+		Reflect: true,
+	}
+	text := pen.Text(nil, *gotoX, *gotoY, *size, polymark.AlignCenter|polymark.AlignCenter, fnt, banner)
+	return polysToList(list, text)
+}
 
 func main() {
 	flag.Parse()
@@ -42,7 +196,9 @@ func main() {
 	var conn *glase.Conn
 	var err error
 
-	defer log.Print("done.")
+	// Write this at the end so we can get a sense of how long
+	// things took.
+	defer log.Print("Done.")
 
 	ctx := context.Background()
 
@@ -88,7 +244,7 @@ func main() {
 	if *decode != "" {
 		a, err := conn.ParseListCommand(*decode)
 		if err != nil {
-			log.Fatalf("unable to parse %q", *decode)
+			log.Fatalf("Unable to parse %q", *decode)
 		}
 		s := conn.Disassemble(a)
 		log.Printf("%q => %s", *decode, s)
@@ -98,7 +254,7 @@ func main() {
 	if *dis != "" {
 		d, err := os.ReadFile(*dis)
 		if err != nil {
-			log.Fatalf("failed to read %q: %v", *dis, err)
+			log.Fatalf("Failed to read %q: %v", *dis, err)
 		}
 		for i, line := range strings.Split(string(d), "\n") {
 			if line == "" {
@@ -106,7 +262,7 @@ func main() {
 			}
 			a, err := conn.ParseListCommand(line)
 			if err != nil {
-				log.Fatalf("unable to parse (line %d): %q", i+1, line)
+				log.Fatalf("Unable to parse (line %d): %q", i+1, line)
 			}
 			s := conn.Disassemble(a)
 			fmt.Printf("%5d: %q => %s\n", i, line, s)
@@ -187,9 +343,13 @@ func main() {
 				list = list.JumpXY(x2, y0).JumpXY(x2, y1)
 			}
 		}
+	} else if *banner != "" {
+		list = renderBanner(list, *banner)
+	} else if *laser {
+		list = renderLaser(list, *size)
 	} else if *poly != 0 {
 		if *poly < 3 {
-			log.Fatalf("need --poly value >= 3, got %d", *poly)
+			log.Fatalf("Need --poly value >= 3, got %d", *poly)
 		}
 		theta := math.Pi / float64(*poly)
 		if *burn {
@@ -215,21 +375,30 @@ func main() {
 		if *burn {
 			list = list.Sleep(30 * time.Microsecond)
 			list = list.DelayJumps(glase.BasicProfile.JumpDelay)
-		}
-		if !*burn {
+		} else {
 			n, err := list.ReplayFrom(repeatFrom, 0)
 			if err != nil {
-				log.Fatalf("failed to repeat from %d: %v", repeatFrom, err)
+				log.Fatalf("Failed to repeat from %d: %v", repeatFrom, err)
 			}
-			log.Printf("appended %d repetitions", n)
+			log.Printf("Appended %d repetitions", n)
 		}
 	}
 
 	var data []byte
 	if strings.HasSuffix(*cor, ".fixup") {
 		log.Print("Loading data is ASCII fixup data, lines of: xi yi mmx mmy")
-		_, err := conn.DeriveCorrections(*cor)
-		log.Fatal("not able to continue yet: ", err)
+		data, err = conn.DeriveCorrections(*cor)
+		if err != nil {
+			log.Fatalf("Failed to generate correction data from %q: %v", *cor, err)
+		}
+		if *regen {
+			dest := fmt.Sprint(*cor, ".cor")
+			if err := os.WriteFile(dest, data, 0644); err != nil {
+				log.Fatalf("Failed to write %q: %v", dest, err)
+			}
+			log.Printf("New correction data written to %q", dest)
+			return
+		}
 	} else if *cor != "" {
 		data, err = os.ReadFile(*cor)
 		if err != nil {
@@ -272,13 +441,13 @@ func main() {
 		}()
 		if !*burn {
 			log.Printf("10 seconds of preview %v", ctx2)
-			time.Sleep(10 * time.Second)
+			time.Sleep(*preview)
 			cancel()
-			log.Print("canceled, wait to exit")
+			log.Print("Canceled, wait to exit")
 		}
 		wg.Wait()
 		if err != nil {
-			log.Fatalf("failure to run (--burn=%v): %v", *burn, err)
+			log.Fatalf("Failure to run (--burn=%v): %v", *burn, err)
 		}
 		return
 	}
@@ -297,14 +466,14 @@ func main() {
 
 	x, y, err := conn.GetXY()
 	if err != nil {
-		log.Fatalf("failed to read XY: %v", err)
+		log.Fatalf("Failed to read XY: %v", err)
 	}
-	log.Printf("current XY=(%f, %f)", x, y)
+	log.Printf("Current XY=(%f, %f)", x, y)
 	conn.GotoXY(*gotoX, *gotoY)
 	time.Sleep(500 * time.Millisecond)
 	x, y, err = conn.GetXY()
 	if err != nil {
-		log.Fatalf("failed to read XY: %v", err)
+		log.Fatalf("Failed to read XY: %v", err)
 	}
-	log.Printf("final XY=(%f, %f)", x, y)
+	log.Printf("Final XY=(%f, %f)", x, y)
 }

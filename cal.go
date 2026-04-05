@@ -248,10 +248,5 @@ func (c *Conn) DeriveCorrections(path string) ([]byte, error) {
 		}
 	}
 	binary.Write(buf, binary.LittleEndian, uint32(0x7))
-	dest := path + ".cor"
-	if err := os.WriteFile(dest, buf.Bytes(), 0644); err != nil {
-		return nil, err
-	}
-	log.Printf("new correction data written to %q", dest)
-	return nil, nil
+	return buf.Bytes(), nil
 }

@@ -319,8 +319,8 @@ type Profile struct {
 
 // PointerProfile is for displaying images for alignment etc.
 var PointerProfile = Profile{
-	JumpSpeed:     5000,
-	MarkSpeed:     5000,
+	JumpSpeed:     8000,
+	MarkSpeed:     8000,
 	LaserOnDelay:  0,
 	LaserOffDelay: 0,
 	PolygonDelay:  0,
