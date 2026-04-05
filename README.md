@@ -1,13 +1,14 @@
 # Glase is a Go package to support a ComMarker Omni 1 5W UV LASER
 
 There is no official support for Linux for this LASER, but I wanted to
-use it with some scriptable projects so I've developed this package
-and a cli tool to bridge that gap in a way that meets my needs. See
-the References section below for a gui alternative.
+use it with some scriptable projects so I've developed this
+[package](https://zappem.net/pub/io/glase) and a cli tool to bridge
+that gap in a way that meets my needs. See the References section
+below for a gui alternative.
 
 ## Seriously, this is a CLASS 4 LASER!
 
-Before using this, tool and the Omni 1 in general, do yourself a favor
+Before using this tool, and the Omni 1 in general, do yourself a favor
 and [watch this highly accessible
 video](https://www.youtube.com/watch?v=rd6rCU8ZMhY). Or [this shorter,
 drier, video](https://www.youtube.com/watch?v=QqjYJ3LfJRs). All tools
