@@ -49,10 +49,42 @@ var (
 	regen     = flag.Bool("regen", false, "write new correction file, named by extending --cor name")
 	aCode     = flag.Int("aruco", -1, "render an --aruco <code> centered at --x,--y of --size")
 	invert    = flag.Bool("invert", false, "invert which parts of the --aruco code to burn")
+	qFreq     = flag.Float64("shmoo-qfreq", 0, "mm squares to shmoo Q-pulse (ns) and Frequency (kHz)")
 )
 
-// polysToList renders polygon Shapes with a list of laser commands.
-func polysToList(list *glase.List, polys *polygon.Shapes) *glase.List {
+// polysToHatch fills the polygon (avoiding holes) with a up-down and
+// left-right hatch pattern.
+func polysToHatch(list *glase.List, polys *polygon.Shapes, hatch float64) *glase.List {
+	var holes []int
+	var shapes []int
+	for i, p := range polys.P {
+		if p.Hole {
+			holes = append(holes, i)
+		} else {
+			shapes = append(shapes, i)
+		}
+	}
+	for _, i := range shapes {
+		lines, err := polys.Slice(i, hatch, holes...)
+		if err != nil {
+			log.Fatalf("Failed to x-hatch laser icon %d: %v", i, err)
+		}
+		for _, line := range lines {
+			list = list.JumpXY(line.From.X, line.From.Y).MarkXY(line.To.X, line.To.Y).Sleep(30 * time.Microsecond)
+		}
+		lines, err = polys.VSlice(i, hatch, holes...)
+		if err != nil {
+			log.Fatalf("Failed to y-hatch laser icon %d: %v", i, err)
+		}
+		for _, line := range lines {
+			list = list.JumpXY(line.From.X, line.From.Y).MarkXY(line.To.X, line.To.Y).Sleep(30 * time.Microsecond)
+		}
+	}
+	return list
+}
+
+// polystoList renders polygon Shapes with a list of laser commands.
+func polysToList(list *glase.List, polys *polygon.Shapes, hatch float64) *glase.List {
 	ll, tr := polys.BB()
 	if ll.X < -80 || ll.Y < -80 || tr.X > 80 || tr.Y > 80 {
 		log.Fatalf("Polygons too large to render. Bounding-box: %.2f <-> %.2f", ll, tr)
@@ -108,6 +140,9 @@ func polysToList(list *glase.List, polys *polygon.Shapes) *glase.List {
 			}
 		}
 	}
+	if hatch != 0 && *burn {
+		list = polysToHatch(list, polys, hatch)
+	}
 	for _, p := range polys.P {
 		for i := 0; i <= len(p.PS); i++ {
 			var pt polygon.Point
@@ -150,7 +185,7 @@ func renderLaser(list *glase.List, size float64) *glase.List {
 		{cX, cY + dY - dYlow},
 		{cX - dX, cY - dYlow},
 	}, 2*border, true, true)
-	list = polysToList(list, polys)
+	list = polysToList(list, polys, *hatch)
 
 	// circle
 	polys = pen.Circle(nil, polygon.Point{cX, cY}, 3*border)
@@ -176,21 +211,73 @@ func renderLaser(list *glase.List, size float64) *glase.List {
 			{cX + rX, cY + rY},
 		}, border*.5, false, false)
 	}
-	return polysToList(list, polys)
+	return polysToList(list, polys, *hatch)
 }
 
-// Render text at desired coordinates of desired font and scale.
-func renderBanner(list *glase.List, banner string) *glase.List {
-	fnt, err := hershey.New(*font)
-	if err != nil {
-		log.Fatalf("Failed to load font %q: %v", *font, err)
-	}
+// renderText text at desired coordinates with desired font, size and alignment.
+func renderText(list *glase.List, fnt *hershey.Font, x, y, size float64, banner string, align polymark.Alignment) *glase.List {
 	pen := &polymark.Pen{
 		Scribe:  *scribe,
 		Reflect: true,
 	}
-	text := pen.Text(nil, *gotoX, *gotoY, *size, polymark.AlignCenter|polymark.AlignCenter, fnt, banner)
-	return polysToList(list, text)
+	text := pen.Text(nil, x, y, size, align, fnt, banner)
+	return polysToList(list, text, *hatch)
+}
+
+// renderQFShmoo renders a 2D array of Q-pulse (ns) and Frequency
+// (kHz) squares of size edge, with axis labels.
+func renderQFShmoo(list *glase.List, edge float64) *glase.List {
+	step := edge + 1
+	margin := 3 * step
+
+	//width := 11*step + margin
+	//height := 16*step + step
+
+	fnt, err := hershey.New(*font)
+	if err != nil {
+		log.Fatalf("Failed to load font %q: %v", font, err)
+	}
+	_, xL, xR := fnt.Text("M")
+	scale := edge / (float64(xR-xL) * *scribe) * 0.75
+	for i := 1; i <= 10; i++ {
+		q := time.Duration(i) * time.Nanosecond
+		x := *gotoX + margin + step*(float64(i)-0.5)
+		log.Printf("q-pulse center top @ (%.1f,%.1f): %v", x, *gotoY+step-1, q)
+		list = renderText(list, fnt, x, *gotoY+step-1, scale, fmt.Sprint(i), polymark.AlignCenter|polymark.AlignAbove)
+		for j := 1; j <= 15; j++ {
+			f := 10.0 * float64(j)
+			y := *gotoY + step*(float64(j)+0.5)
+			if i == 1 {
+				log.Printf("freq (kHz) right middle @ (%.1f,%.1f): %.0f", *gotoX+margin-1, y, f)
+				list = renderText(list, fnt, *gotoX+margin-1, y, scale, fmt.Sprintf("%.0f", f), polymark.AlignRight|polymark.AlignMiddle)
+			}
+			x0, y0 := x-.5*edge, y-.5*edge
+			x1, y1 := x0+edge, y0+edge
+			var sq *polygon.Shapes
+			sq, err := sq.Append([]polygon.Point{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}...)
+			if err != nil {
+				log.Fatalf("unable to build square %f,%f <- %f,%f", x0, y0, x1, y1)
+			}
+			prof := glase.BasicProfile
+			prof.MarkSpeed = *bSpeed
+			prof.MarkFrequency = f
+			prof.MarkPowerRatio = q
+
+			list, err = list.Start(prof)
+			if err != nil {
+				log.Fatalf("failed to start hatch profile %v: %v", prof, err)
+			}
+			list = polysToHatch(list, sq, *hatch)
+
+			prof = glase.BasicProfile
+			prof.MarkSpeed = *bSpeed
+			list, err = list.Start(prof)
+			if err != nil {
+				log.Fatalf("failed to restore profile %v: %v", prof, err)
+			}
+		}
+	}
+	return list
 }
 
 func renderAruco(list *glase.List, x, y, size float64, code int) *glase.List {
@@ -308,8 +395,14 @@ func main() {
 			p := glase.BasicProfile
 			p.MarkSpeed = *bSpeed * 2
 			list, err = list.Start(p)
+			if err != nil {
+				log.Fatalf("failed to start profile %v: %v", p, err)
+			}
 		} else {
 			list, err = list.Start(glase.PointerProfile)
+			if err != nil {
+				log.Fatalf("failed to start pointer profile: %v", err)
+			}
 		}
 
 		// To operate in galvo units, we convert back to mm
@@ -377,9 +470,15 @@ func main() {
 			}
 		}
 	} else if *banner != "" {
-		list = renderBanner(list, *banner)
+		fnt, err := hershey.New(*font)
+		if err != nil {
+			log.Fatalf("Failed to load font %q: %v", font, err)
+		}
+		list = renderText(list, fnt, *gotoX, *gotoY, *size, *banner, polymark.AlignCenter|polymark.AlignCenter)
 	} else if *laser {
 		list = renderLaser(list, *size)
+	} else if *qFreq != 0 {
+		list = renderQFShmoo(list, *qFreq)
 	} else if *poly != 0 {
 		if *poly < 3 {
 			log.Fatalf("Need --poly value >= 3, got %d", *poly)
