@@ -341,6 +341,20 @@ var BasicProfile = Profile{
 	JumpDelay:      8 * time.Microsecond,
 }
 
+// AblateCuProfile is for removing copper clad PCB.
+var AblateCuProfile = Profile{
+	MarkFrequency:  50, // kHz ~ period of 25000 ns
+	SetCo2FPK1:     50 * time.Microsecond,
+	SetCo2FPK2:     1 * time.Microsecond,
+	MarkPowerRatio: 8 * time.Nanosecond, // compare to period above.
+	JumpSpeed:      4000,                // mm/sec
+	MarkSpeed:      100,                 // mm/sec
+	LaserOnDelay:   300 * time.Microsecond,
+	LaserOffDelay:  100 * time.Microsecond,
+	PolygonDelay:   10 * time.Microsecond,
+	JumpDelay:      8 * time.Microsecond,
+}
+
 func (c *Conn) mmsSpeed(speed float64) uint16 {
 	n := uint(speed * 256 / 200000 * c.mm2galvo)
 	if n > 0xffff {
