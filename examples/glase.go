@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"zappem.net/pub/graphics/aruco"
 	"zappem.net/pub/graphics/hershey"
 	"zappem.net/pub/graphics/polymark"
 	"zappem.net/pub/io/glase"
@@ -46,9 +47,11 @@ var (
 	bb        = flag.Bool("bb", false, "just display the bounding box instead of --banner text")
 	laser     = flag.Bool("laser", false, "burn a laser icon of --size at (--x,--y)")
 	regen     = flag.Bool("regen", false, "write new correction file, named by extending --cor name")
+	aCode     = flag.Int("aruco", -1, "render an --aruco <code> centered at --x,--y of --size")
+	invert    = flag.Bool("invert", false, "invert which parts of the --aruco code to burn")
 )
 
-// polystoList renders polygon Shapes with a list of laser commands.
+// polysToList renders polygon Shapes with a list of laser commands.
 func polysToList(list *glase.List, polys *polygon.Shapes) *glase.List {
 	ll, tr := polys.BB()
 	if ll.X < -80 || ll.Y < -80 || tr.X > 80 || tr.Y > 80 {
@@ -89,14 +92,14 @@ func polysToList(list *glase.List, polys *polygon.Shapes) *glase.List {
 			}
 		}
 		for _, i := range shapes {
-			lines, err := polys.Slice(i, *hatch, holes...)
+			lines, err := polys.Hatch(i, *scribe, *hatch/2, *hatch, 0, holes...)
 			if err != nil {
 				log.Fatalf("Failed to x-hatch laser icon %d: %v", i, err)
 			}
 			for _, line := range lines {
 				list = list.JumpXY(line.From.X, line.From.Y).MarkXY(line.To.X, line.To.Y).Sleep(30 * time.Microsecond)
 			}
-			lines, err = polys.VSlice(i, *hatch, holes...)
+			lines, err = polys.Hatch(i, *scribe, *hatch/2, *hatch, math.Pi/2, holes...)
 			if err != nil {
 				log.Fatalf("Failed to y-hatch laser icon %d: %v", i, err)
 			}
@@ -188,6 +191,36 @@ func renderBanner(list *glase.List, banner string) *glase.List {
 	}
 	text := pen.Text(nil, *gotoX, *gotoY, *size, polymark.AlignCenter|polymark.AlignCenter, fnt, banner)
 	return polysToList(list, text)
+}
+
+func renderAruco(list *glase.List, x, y, size float64, code int) *glase.List {
+	a, err := aruco.Encode(code)
+	if err != nil {
+		log.Fatalf("Unable to encode %d: %v", code, err)
+	}
+	delta := size / 10
+	margin := (size - 7*delta) / 2
+	half := size / 2
+	var squares *polygon.Shapes
+	for i := 0; i < len(a); i++ {
+		px := x - half + margin + delta*float64(i)
+		for j, light := range a[i] {
+			py := y + half - (margin + delta*float64(j))
+			if light != *invert {
+				continue
+			}
+			// minor extension of the upper right to
+			// assist with union merge.
+			squares = squares.Builder([]polygon.Point{
+				{px, py},
+				{px + delta + *scribe/10, py},
+				{px + delta + *scribe/10, py + delta + *scribe/10},
+				{px, py + delta + *scribe/10},
+			}...)
+		}
+	}
+	squares.Union()
+	return polysToList(list, squares)
 }
 
 func main() {
@@ -382,6 +415,8 @@ func main() {
 			}
 			log.Printf("Appended %d repetitions", n)
 		}
+	} else if *aCode != -1 {
+		list = renderAruco(list, *gotoX, *gotoY, *size, *aCode)
 	}
 
 	var data []byte
