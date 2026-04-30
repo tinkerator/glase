@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,8 @@ var (
 	aCode     = flag.Int("aruco", -1, "render an --aruco <code> centered at --x,--y of --size")
 	invert    = flag.Bool("invert", false, "invert which parts of the --aruco code to burn")
 	qFreq     = flag.Float64("shmoo-qfreq", 0, "mm squares to shmoo Q-pulse (ns) and Frequency (kHz)")
+	box       = flag.String("box", "", "renders a box in mm format --box=dx,dy centered at --x, --y")
+	repeat    = flag.Int("repeat", 0, "number of times to repeat a --box")
 )
 
 // polysToHatch fills the polygon (avoiding holes) with a up-down and
@@ -160,6 +163,37 @@ func polysToList(list *glase.List, polys *polygon.Shapes, hatch float64) *glase.
 		if *burn {
 			list = list.Sleep(30 * time.Microsecond)
 		}
+	}
+	return list
+}
+
+// renderBox renders a box around a central point (cX,cY) with width dX and height dY.
+func renderBox(list *glase.List, cX, cY, dX, dY, hatch float64) *glase.List {
+	prof := glase.PointerProfile
+	if *burn {
+		prof = glase.BasicProfile
+		prof.MarkSpeed = *bSpeed
+	}
+	var err error
+	if list, err = list.Start(prof); err != nil {
+		log.Fatalf("unable to start box: %v", err)
+	}
+	hX, hY := dX/2, dY/2
+	var box *polygon.Shapes
+	box, err = box.Append([]polygon.Point{
+		{cX - hX, cY - hY},
+		{cX + hX, cY - hY},
+		{cX + hX, cY + hY},
+		{cX - hX, cY + hY},
+	}...)
+	if err != nil {
+		log.Fatalf("unable to build box polygon: %v")
+	}
+	for i := 0; i <= *repeat; i++ {
+		list = polysToList(list, box, 0)
+	}
+	if hatch != 0 && *burn {
+		list = polysToHatch(list, box, hatch)
 	}
 	return list
 }
@@ -475,6 +509,20 @@ func main() {
 			log.Fatalf("Failed to load font %q: %v", font, err)
 		}
 		list = renderText(list, fnt, *gotoX, *gotoY, *size, *banner, polymark.AlignCenter|polymark.AlignCenter)
+	} else if *box != "" {
+		fields := strings.Split(strings.TrimSpace(*box), ",")
+		if len(fields) != 2 {
+			log.Fatalf("--box=<dx>,<dy>, got --box=%q", *box)
+		}
+		dx, err1 := strconv.ParseFloat(fields[0], 64)
+		if err1 != nil {
+			log.Fatalf("--box dx=%q?: %v", fields[0], err1)
+		}
+		dy, err2 := strconv.ParseFloat(fields[1], 64)
+		if err1 != nil {
+			log.Fatalf("--box dy=%q?: %v", fields[1], err2)
+		}
+		list = renderBox(list, *gotoX, *gotoY, dx, dy, *hatch)
 	} else if *laser {
 		list = renderLaser(list, *size)
 	} else if *qFreq != 0 {
