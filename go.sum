@@ -4,11 +4,11 @@ zappem.net/pub/graphics/aruco v0.2.0 h1:gj/nxG4fFC18K6RB3aFJd6OyfV6zHvDhEDROW+Kg
 zappem.net/pub/graphics/aruco v0.2.0/go.mod h1:5mAlb5qj5pYOIcH6vkTlvIu/r1tQ21d5I5x0PDBvf/0=
 zappem.net/pub/graphics/hershey v0.6.0 h1:cMugJUvQdVAsXN1cqbfMaQIrlFH+f0VIaErFQcFcvdQ=
 zappem.net/pub/graphics/hershey v0.6.0/go.mod h1:XJSqOc14jKbhx0zXl76XwVGxd0J60dU2MXmInCvTVuU=
-zappem.net/pub/graphics/polymark v0.6.9 h1:yoeq1UPuSuLCeyxQ5RSuKTaLYpEpGYL9T7wx8FPqK8M=
-zappem.net/pub/graphics/polymark v0.6.9/go.mod h1:tGN49AgmvbUFFItRaDDSOW1jG7IyTWzdeNU1da/eSv4=
+zappem.net/pub/graphics/polymark v0.6.10 h1:S7aMyF3aj1j8YwJW+wmfQNYKhbeZ3RaKnZpuCkxZL3M=
+zappem.net/pub/graphics/polymark v0.6.10/go.mod h1:D+tCyRshQXXTCHLlbklu4ymKeQhDaep17ZOl/+8OufM=
 zappem.net/pub/graphics/svgof v0.5.3 h1:ZieHZSBWP6WknHruP7QP32e+2MmkeaxYBSqj4DARsKE=
 zappem.net/pub/graphics/svgof v0.5.3/go.mod h1:GKUUTS0rjonAAYr0LK7RO4aV42vGg6rxL3DfBKP3Wuc=
 zappem.net/pub/math/linear v0.1.2 h1:u/k+KqxmcL/tXoADbBbX0h0EnLudR99U2QEvKhjRxic=
 zappem.net/pub/math/linear v0.1.2/go.mod h1:KVHntSy80S/97DYLiPUHi3tgiMzagtQMEZ6xDf+2E8c=
-zappem.net/pub/math/polygon v0.9.16 h1:52Ese0bqjS8FT5pQ8h+RxiFldAqKTftpdchQWH033uI=
-zappem.net/pub/math/polygon v0.9.16/go.mod h1:u6/3+TRLWGqqVIgArTaWPpZQDgg4O6YP51AUjjMYUG8=
+zappem.net/pub/math/polygon v0.9.19 h1:5VNi18906SDK6Qd95XiR1copeaSsBIMgvL9ZVUBPi40=
+zappem.net/pub/math/polygon v0.9.19/go.mod h1:u6/3+TRLWGqqVIgArTaWPpZQDgg4O6YP51AUjjMYUG8=
