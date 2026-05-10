@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -22,6 +23,32 @@ import (
 	"zappem.net/pub/math/polygon"
 )
 
+type Transform struct {
+	At, To    polygon.Point
+	RotateDeg float64
+	Scale     float64
+}
+
+// XY applies the transform, t, to the input (x,y) and returns (xT,yT).
+func (t Transform) XY(x, y float64) (xT, yT float64) {
+	xA, yA := t.Scale*(x-t.At.X), t.Scale*(y-t.At.Y)
+	th := t.RotateDeg * math.Pi / 180
+	cR, sR := math.Cos(th), math.Sin(th)
+	xT = t.To.X + cR*xA - sR*yA
+	yT = t.To.Y + sR*xA + cR*yA
+	return
+}
+
+// Transformer is the polygon transformation to laser
+// coordinates. Override this no-op default with --transform
+// <file.json>.
+var Transformer = Transform{
+	At:        polygon.Point{0, 0},
+	To:        polygon.Point{0, 0},
+	RotateDeg: 0,
+	Scale:     1,
+}
+
 var (
 	info      = flag.Bool("info", false, "list the discovered laser devices")
 	serial    = flag.String("serial", "", "serial numbered device to connect to")
@@ -37,6 +64,7 @@ var (
 	dis       = flag.String("dis", "", "disassemble a stream file containing command list instructions")
 	sim       = flag.Bool("sim", false, "simulate the connection if no device is found")
 	bSpeed    = flag.Float64("burn-speed", 200, "burn speed of movement mm/sec")
+	burnCu    = flag.Bool("burn-cu", false, "use PCB copper burn settings with --burn")
 	grid      = flag.Int("grid", 0, "cm grid edge size, centered at (--x,--y)")
 	calibrate = flag.Bool("calibrate", false, "renders a 65x65 pt grid of 1000 galvo unit pitch")
 	banner    = flag.String("banner", "", "text to render, centered at (--x,--y) with --font and --size")
@@ -53,7 +81,23 @@ var (
 	qFreq     = flag.Float64("shmoo-qfreq", 0, "mm squares to shmoo Q-pulse (ns) and Frequency (kHz)")
 	box       = flag.String("box", "", "renders a box in mm format --box=dx,dy centered at --x, --y")
 	repeat    = flag.Int("repeat", 0, "number of times to repeat a --box")
+	transform = flag.String("transform", "", "filename of json Transform structure")
+	mesh      = flag.Float64("mesh", 0.0, "3x3 tiles surrounded by mesh of width --mesh (with or without --hatch --burn)")
 )
+
+// jsonShapes outputs to os.Stdout the shapes of interest, p, in json
+// format. See the zappem.net/pub/graphics/svgpoly examples/outline.go
+// code for something that can render it.
+func jsonShapes(p *polygon.Shapes, abort bool) {
+	d, err := json.Marshal(p)
+	if err != nil {
+		log.Fatalf("failed to marshal shapes: %v", err)
+	}
+	fmt.Println(string(d))
+	if abort {
+		log.Fatal("aborting")
+	}
+}
 
 // polysToHatch fills the polygon (avoiding holes) with a up-down and
 // left-right hatch pattern.
@@ -68,14 +112,14 @@ func polysToHatch(list *glase.List, polys *polygon.Shapes, hatch float64) *glase
 		}
 	}
 	for _, i := range shapes {
-		lines, err := polys.Slice(i, hatch, holes...)
+		lines, err := polys.Hatch(i, *scribe, hatch, *scribe/2, 0, holes...)
 		if err != nil {
 			log.Fatalf("Failed to x-hatch laser icon %d: %v", i, err)
 		}
 		for _, line := range lines {
 			list = list.JumpXY(line.From.X, line.From.Y).MarkXY(line.To.X, line.To.Y).Sleep(30 * time.Microsecond)
 		}
-		lines, err = polys.VSlice(i, hatch, holes...)
+		lines, err = polys.Hatch(i, *scribe, hatch, *scribe/2, math.Pi/2, holes...)
 		if err != nil {
 			log.Fatalf("Failed to y-hatch laser icon %d: %v", i, err)
 		}
@@ -94,11 +138,14 @@ func polysToList(list *glase.List, polys *polygon.Shapes, hatch float64) *glase.
 	} else if ll.X < -75 || ll.Y < -75 || tr.X > 75 || tr.Y > 75 {
 		log.Printf("WARNING: coordinates unstable at edges of polygons. Bounding-box: %.2f <-> %.2f", ll, tr)
 	}
-	polys.Union()
 	var err error
 	if *burn {
 		p := glase.BasicProfile
-		p.MarkSpeed = *bSpeed
+		if *burnCu {
+			p = glase.AblateCuProfile
+		} else {
+			p.MarkSpeed = *bSpeed
+		}
 		list, err = list.Start(p)
 	} else {
 		list, err = list.Start(glase.PointerProfile)
@@ -189,6 +236,7 @@ func renderBox(list *glase.List, cX, cY, dX, dY, hatch float64) *glase.List {
 	if err != nil {
 		log.Fatalf("unable to build box polygon: %v")
 	}
+	box = box.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
 	for i := 0; i <= *repeat; i++ {
 		list = polysToList(list, box, 0)
 	}
@@ -219,6 +267,8 @@ func renderLaser(list *glase.List, size float64) *glase.List {
 		{cX, cY + dY - dYlow},
 		{cX - dX, cY - dYlow},
 	}, 2*border, true, true)
+	polys.Union()
+	polys = polys.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
 	list = polysToList(list, polys, *hatch)
 
 	// circle
@@ -245,16 +295,20 @@ func renderLaser(list *glase.List, size float64) *glase.List {
 			{cX + rX, cY + rY},
 		}, border*.5, false, false)
 	}
+	polys.Union()
+	polys = polys.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
 	return polysToList(list, polys, *hatch)
 }
 
-// renderText text at desired coordinates with desired font, size and alignment.
+// renderText text at desired coordinates with desired font, size and
+// alignment. It applies the Transformer.
 func renderText(list *glase.List, fnt *hershey.Font, x, y, size float64, banner string, align polymark.Alignment) *glase.List {
 	pen := &polymark.Pen{
 		Scribe:  *scribe,
 		Reflect: true,
 	}
-	text := pen.Text(nil, x, y, size, align, fnt, banner)
+	text := pen.Text(nil, x, y, size, align, fnt, banner).Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	text.Union()
 	return polysToList(list, text, *hatch)
 }
 
@@ -301,6 +355,7 @@ func renderQFShmoo(list *glase.List, edge float64) *glase.List {
 			if err != nil {
 				log.Fatalf("failed to start hatch profile %v: %v", prof, err)
 			}
+			sq = sq.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
 			list = polysToHatch(list, sq, *hatch)
 
 			prof = glase.BasicProfile
@@ -341,7 +396,38 @@ func renderAruco(list *glase.List, x, y, size float64, code int) *glase.List {
 		}
 	}
 	squares.Union()
-	return polysToList(list, squares)
+	squares = squares.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	return polysToList(list, squares, *hatch)
+}
+
+// renderMesh renders the negative of a 3x3 collection of 3mm squares centered at x,y
+func renderMesh(list *glase.List, x, y, gap float64) *glase.List {
+	var squares *polygon.Shapes
+	const width = 3
+	step := gap + 3
+	from := -(gap+width*step)/2 + gap
+	for i := 0; i < width; i++ {
+		x0 := x + from + float64(i)*step
+		for j := 0; j < width; j++ {
+			y0 := y + from + float64(j)*step
+			squares = squares.Builder([]polygon.Point{
+				{x0, y0},
+				{x0 + width, y0},
+				{x0 + width, y0 + width},
+				{x0, y0 + width},
+			}...)
+		}
+	}
+	squares.Union()
+	neg, err := squares.Negative(gap)
+	if err != nil {
+		log.Fatalf("failed to generate negative: %v", err)
+	}
+	if len(neg.P) != 10 {
+		log.Fatalf("expecting 10 polygons, got %d", len(neg.P))
+	}
+	neg = neg.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	return polysToList(list, neg, *hatch)
 }
 
 func main() {
@@ -355,6 +441,16 @@ func main() {
 	defer log.Print("Done.")
 
 	ctx := context.Background()
+
+	if *transform != "" {
+		d, err := os.ReadFile(*transform)
+		if err != nil {
+			log.Fatalf("failed to read %q: %v", *transform, err)
+		}
+		if err := json.Unmarshal(d, &Transformer); err != nil {
+			log.Fatalf("failed to decode %q: %v", *transform, err)
+		}
+	}
 
 	if *sim {
 		conn = glase.OpenSim()
@@ -423,8 +519,10 @@ func main() {
 		}
 		return
 	}
+
 	list := conn.NewList()
 	if *calibrate {
+		// Note --transform is ignored for this pattern.
 		if *burn {
 			p := glase.BasicProfile
 			p.MarkSpeed = *bSpeed * 2
@@ -471,11 +569,12 @@ func main() {
 		half := float64(5 * *grid)
 		fromX := *gotoX - half
 		fromY := *gotoY - half
-		x0, x1 := fromX, fromX+float64(size)
-		y0, y1 := fromY, fromY+float64(size)
+
+		x0, y0 := Transformer.XY(fromX, fromY)
+		x1, y1 := Transformer.XY(fromX+float64(size), fromY+float64(size))
+
 		for i := 0; i <= size; i++ {
-			x2 := x0 + float64(i)
-			y2 := y0 + float64(i)
+			x2, y2 := Transformer.XY(fromX+float64(i), fromY+float64(i))
 			if *burn {
 				list = list.JumpXY(x0, y2).MarkXY(x1, y2).Sleep(30 * time.Microsecond)
 				list = list.JumpXY(x2, y0).MarkXY(x2, y1).Sleep(30 * time.Microsecond)
@@ -490,11 +589,13 @@ func main() {
 			p := glase.BasicProfile
 			p.MarkSpeed = *bSpeed
 			list, err = list.Start(p)
+			if err != nil {
+				log.Fatalf("unable to burn cm grid thicker: %v", err)
+			}
 		}
 
 		for i := 0; i <= size; i += 10 {
-			x2 := x0 + float64(i)
-			y2 := y0 + float64(i)
+			x2, y2 := Transformer.XY(fromX+float64(i), fromY+float64(i))
 			if *burn {
 				list = list.JumpXY(x0, y2).MarkXY(x1, y2).Sleep(30 * time.Microsecond)
 				list = list.JumpXY(x2, y0).MarkXY(x2, y1).Sleep(30 * time.Microsecond)
@@ -527,6 +628,11 @@ func main() {
 		list = renderLaser(list, *size)
 	} else if *qFreq != 0 {
 		list = renderQFShmoo(list, *qFreq)
+	} else if *mesh > 0.0 {
+		if *mesh < *hatch && *burn {
+			log.Fatalf("--burn --hatch of --mesh needs to be --hatch < --mesh: but reverse: %.3f >= %.3f", *hatch, *mesh)
+		}
+		list = renderMesh(list, *gotoX, *gotoY, *mesh)
 	} else if *poly != 0 {
 		if *poly < 3 {
 			log.Fatalf("Need --poly value >= 3, got %d", *poly)
@@ -631,10 +737,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failure to run (--burn=%v): %v", *burn, err)
 		}
-		return
-	}
-
-	if *circle {
+	} else if *circle {
 		const steps = 100
 		const ang = 2 * math.Pi / steps
 		const r = 40.0 // mm
@@ -651,11 +754,12 @@ func main() {
 		log.Fatalf("Failed to read XY: %v", err)
 	}
 	log.Printf("Current XY=(%f, %f)", x, y)
-	conn.GotoXY(*gotoX, *gotoY)
+	tX, tY := Transformer.XY(*gotoX, *gotoY)
+	conn.GotoXY(tX, tY)
 	time.Sleep(500 * time.Millisecond)
 	x, y, err = conn.GetXY()
 	if err != nil {
 		log.Fatalf("Failed to read XY: %v", err)
 	}
-	log.Printf("Final XY=(%f, %f)", x, y)
+	log.Printf("Final effective XY=(%f, %f)", x, y)
 }
