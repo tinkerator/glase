@@ -56,10 +56,10 @@ var (
 	scale     = flag.Float64("mm2gal", 0.0, "non-zero overrides number of galvo units to mm")
 	gotoX     = flag.Float64("x", 0.0, "x coordinate at end of run")
 	gotoY     = flag.Float64("y", 0.0, "y coordinate at end of run")
-	radius    = flag.Float64("radius", 5.0, "mm radius of --poly")
+	radius    = flag.Float64("radius", 5.0, "mm radius of --poly-star")
 	circle    = flag.Bool("circle", false, "step out a circle with the laser")
-	burn      = flag.Bool("burn", false, "burn the specified --poly")
-	poly      = flag.Int("poly", 0, "draw a 2*n sided star (n>=3) around (--x,--y)")
+	burn      = flag.Bool("burn", false, "burn the specified object")
+	polystar  = flag.Int("poly-star", 0, "draw a 2*n sided star (n>=3) around (--x,--y)")
 	decode    = flag.String("decode", "", "decode the hex dump of a command list instruction")
 	dis       = flag.String("dis", "", "disassemble a stream file containing command list instructions")
 	sim       = flag.Bool("sim", false, "simulate the connection if no device is found")
@@ -83,6 +83,7 @@ var (
 	repeat    = flag.Int("repeat", 0, "number of times to repeat a --box")
 	transform = flag.String("transform", "", "filename of json Transform structure")
 	mesh      = flag.Float64("mesh", 0.0, "3x3 tiles surrounded by mesh of width --mesh (with or without --hatch --burn)")
+	poly      = flag.String("poly", "", "render polygon.Shapes from json file at (--x,--y)")
 )
 
 // jsonShapes outputs to os.Stdout the shapes of interest, p, in json
@@ -430,6 +431,22 @@ func renderMesh(list *glase.List, x, y, gap float64) *glase.List {
 	return polysToList(list, neg, *hatch)
 }
 
+// Directly render some polygon.Shapes.
+func renderPoly(list *glase.List, path string) *glase.List {
+	d, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("failed to read %q: %v", path, err)
+	}
+	var p polygon.Shapes
+	if err := json.Unmarshal(d, &p); err != nil {
+		log.Fatalf("unable to parse %q: %v", path, err)
+	}
+	shapes := &p
+	shapes = shapes.Transform(polygon.Point{}, polygon.Point{*gotoX, *gotoY}, 0, 1)
+	shapes = shapes.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	return polysToList(list, shapes, *hatch)
+}
+
 func main() {
 	flag.Parse()
 
@@ -633,11 +650,13 @@ func main() {
 			log.Fatalf("--burn --hatch of --mesh needs to be --hatch < --mesh: but reverse: %.3f >= %.3f", *hatch, *mesh)
 		}
 		list = renderMesh(list, *gotoX, *gotoY, *mesh)
-	} else if *poly != 0 {
-		if *poly < 3 {
+	} else if *poly != "" {
+		list = renderPoly(list, *poly)
+	} else if *polystar != 0 {
+		if *polystar < 3 {
 			log.Fatalf("Need --poly value >= 3, got %d", *poly)
 		}
-		theta := math.Pi / float64(*poly)
+		theta := math.Pi / float64(*polystar)
 		if *burn {
 			p := glase.BasicProfile
 			p.MarkSpeed = *bSpeed
@@ -646,7 +665,7 @@ func main() {
 			list, err = list.Start(glase.PointerProfile)
 		}
 		repeatFrom := list.Offset()
-		for i := 0; i <= *poly*2; i++ {
+		for i := 0; i <= *polystar*2; i++ {
 			at := *radius
 			if i&1 == 0 {
 				at *= 0.5
