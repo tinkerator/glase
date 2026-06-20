@@ -28,7 +28,7 @@ $ go build examples/glase.go
 $ ./glase --info
 ```
 
-To get started, assuming you have the 150mm lense installed in your
+To get started, assuming you have the 150mm lens installed in your
 device (this was the default when I received mine), you also need to
 copy the `jcz150.cor` file to your working directory and rename it
 `local.fixup.cor`. (Creating a new file instead is covered in the
@@ -126,6 +126,7 @@ all this with these 9 lines in the `.fixup` file (if you repeat this
 exercise with your LASER, you may get different numbers):
 
 ```
+# Assumed origin (adjusted later with X and Y entries).
 0 0 0 0
 
 -32 0 -2 0
@@ -179,6 +180,78 @@ looking for a `local.fixup.cor` file in the working directory. So, if
 you want to use the `jcz150.cor` file you received with your machine,
 supply that info explcitly on the command line as `--cor jcz150.cor`,
 or make a local copy of that file with the `local.fixup.cor` name.
+
+### Further adjustments
+
+Using a ruler we can compare the grid spacing and confirm that the
+grid is calibrated. However, the laser itself has an intrinsic X-Y
+plane that may not be fully orthonormal, and may not quite align its
+origin with the base platform of the Omni 1.
+
+I 3D printed a frame to hold my work under the laser and found that
+there was a discrepancy when mounting a board on that frame
+front-upwards vs front-downwards. The difference was less than 0.5 mm,
+but presented a problem when scribing out traces for through-hole
+pins.
+
+To address this I developed a refinement strategy using a translucent
+plastic sheet. Mounting the sheet upward-facing and scribing some 2mm
+x 2mm squares at symmetric points over the surface of the board, and
+then flipping the board over the Y-axis of the frame and then scribing
+the same locations on the reverse side, I found some O(mm) deviations
+in the locations of the squares. If the coordinate system of the laser
+was aligned with that of the frame, these squares should align through
+the translucent board. Since they did not, I averaged the (x,y) of the
+"reflected" underside square of every front-side square, and in the
+imperfect LASER XY coordinates determined a set of points on the true
+Y-axis of the mount. Similarly, I did the same operation to find true
+frame X-axis points. These points were added to the end of the
+`.fixup` file as follows:
+
+```
+# Assumed origin (adjusted later with X and Y entries).
+0 0 0 0
+
+-32 0 -2 0
+32 0 2.5 0
+0 -32 0 -2.5
+0 32 0 3.5
+
+-32 -32 2 -4
+-32 32 1.5 5
+32 32 0 5.5
+32 -32 -2 -4
+
+# Y axis fixup
+Y     0.5       70.025
+Y     0.5         69.8
+Y     0.1        -69.9
+Y   0.125      -70.125
+Y    0.45        50.15
+Y    0.15        49.75
+Y     0.1        -49.8
+Y  -0.075      -50.125
+
+# X axis fixup
+X   -19.8        -0.15
+X    20.1       -0.325
+X   -20.2       -0.125
+X   19.85        -0.25
+X  -39.85        -0.15
+X  40.075       -0.425
+X  -40.15         -0.1
+X  39.875         -0.4
+```
+
+By observing the crossing coordinate of these two lines, I was able to
+determine the true (frame) origin (X=0,Y=0) point. Preserving the
+"distance from that point" of the measured axis points, I could infer
+the "true" XY coordinate directions of the true axes for the frame. I
+modified the glase `.fixup` parsing code to derive an Affine
+transformation from these true axes points, and use that to enhance
+the calibration data to align the LASER XY coordinates with those of
+my mounting frame. Effectively aligning the laser coordinates with
+those of my 3D printer.
 
 ## References
 
