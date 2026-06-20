@@ -20,34 +20,9 @@ import (
 	"zappem.net/pub/graphics/hershey"
 	"zappem.net/pub/graphics/polymark"
 	"zappem.net/pub/io/glase"
+	"zappem.net/pub/math/linear"
 	"zappem.net/pub/math/polygon"
 )
-
-type Transform struct {
-	At, To    polygon.Point
-	RotateDeg float64
-	Scale     float64
-}
-
-// XY applies the transform, t, to the input (x,y) and returns (xT,yT).
-func (t Transform) XY(x, y float64) (xT, yT float64) {
-	xA, yA := t.Scale*(x-t.At.X), t.Scale*(y-t.At.Y)
-	th := t.RotateDeg * math.Pi / 180
-	cR, sR := math.Cos(th), math.Sin(th)
-	xT = t.To.X + cR*xA - sR*yA
-	yT = t.To.Y + sR*xA + cR*yA
-	return
-}
-
-// Transformer is the polygon transformation to laser
-// coordinates. Override this no-op default with --transform
-// <file.json>.
-var Transformer = Transform{
-	At:        polygon.Point{0, 0},
-	To:        polygon.Point{0, 0},
-	RotateDeg: 0,
-	Scale:     1,
-}
 
 var (
 	info      = flag.Bool("info", false, "list the discovered laser devices")
@@ -80,8 +55,8 @@ var (
 	invert    = flag.Bool("invert", false, "invert which parts of the --aruco code to burn")
 	qFreq     = flag.Float64("shmoo-qfreq", 0, "mm squares to shmoo Q-pulse (ns) and Frequency (kHz)")
 	box       = flag.String("box", "", "renders a box in mm format --box=dx,dy centered at --x, --y")
-	repeat    = flag.Int("repeat", 0, "number of times to repeat a --box")
-	transform = flag.String("transform", "", "filename of json Transform structure")
+	repeat    = flag.Int("repeat", 0, "number of times to repeat a --box or --shmoo-qfreq")
+	transform = flag.String("transform", "", "filename of json linear.Affine structure")
 	mesh      = flag.Float64("mesh", 0.0, "3x3 tiles surrounded by mesh of width --mesh (with or without --hatch --burn)")
 	poly      = flag.String("poly", "", "render polygon.Shapes from json file at (--x,--y)")
 )
@@ -103,6 +78,9 @@ func jsonShapes(p *polygon.Shapes, abort bool) {
 // polysToHatch fills the polygon (avoiding holes) with a up-down and
 // left-right hatch pattern.
 func polysToHatch(list *glase.List, polys *polygon.Shapes, hatch float64) *glase.List {
+	if hatch <= 0 {
+		log.Fatalf("--hatch needs to be positive: got=%f", hatch)
+	}
 	var holes []int
 	var shapes []int
 	for i, p := range polys.P {
@@ -164,34 +142,7 @@ func polysToList(list *glase.List, polys *polygon.Shapes, hatch float64) *glase.
 	if err != nil {
 		log.Fatalf("Encountered error: %v", err)
 	}
-	if *hatch != 0 && *burn {
-		var holes []int
-		var shapes []int
-		for i, p := range polys.P {
-			if p.Hole {
-				holes = append(holes, i)
-			} else {
-				shapes = append(shapes, i)
-			}
-		}
-		for _, i := range shapes {
-			lines, err := polys.Hatch(i, *scribe, *hatch/2, *hatch, 0, holes...)
-			if err != nil {
-				log.Fatalf("Failed to x-hatch laser icon %d: %v", i, err)
-			}
-			for _, line := range lines {
-				list = list.JumpXY(line.From.X, line.From.Y).MarkXY(line.To.X, line.To.Y).Sleep(30 * time.Microsecond)
-			}
-			lines, err = polys.Hatch(i, *scribe, *hatch/2, *hatch, math.Pi/2, holes...)
-			if err != nil {
-				log.Fatalf("Failed to y-hatch laser icon %d: %v", i, err)
-			}
-			for _, line := range lines {
-				list = list.JumpXY(line.From.X, line.From.Y).MarkXY(line.To.X, line.To.Y).Sleep(30 * time.Microsecond)
-			}
-		}
-	}
-	if hatch != 0 && *burn {
+	if hatch > 0 && *burn {
 		list = polysToHatch(list, polys, hatch)
 	}
 	for _, p := range polys.P {
@@ -213,6 +164,33 @@ func polysToList(list *glase.List, polys *polygon.Shapes, hatch float64) *glase.
 		}
 	}
 	return list
+}
+
+func polyAdjust(aff linear.Affine, p *polygon.Shapes) *polygon.Shapes {
+	if p == nil {
+		return nil
+	}
+	var sh *polygon.Shapes
+	for _, v := range p.P {
+		var pts []polygon.Point
+		for _, pt := range v.PS {
+			tX, tY := Transform.Apply(pt.X, pt.Y)
+			pts = append(pts, polygon.Point{tX, tY})
+		}
+		sh = sh.Builder(pts...)
+	}
+	return sh
+}
+
+var Transform = linear.Affine{
+	Axx: 1,
+	Ayy: 1,
+}
+
+// This is the equivalent of (*polygon.Shapes).Transform() but using
+// the linear.Affine parameterized form to capture the transformation.
+func polyTransform(p *polygon.Shapes) *polygon.Shapes {
+	return polyAdjust(Transform, p)
 }
 
 // renderBox renders a box around a central point (cX,cY) with width dX and height dY.
@@ -237,7 +215,7 @@ func renderBox(list *glase.List, cX, cY, dX, dY, hatch float64) *glase.List {
 	if err != nil {
 		log.Fatalf("unable to build box polygon: %v")
 	}
-	box = box.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	box = polyTransform(box)
 	for i := 0; i <= *repeat; i++ {
 		list = polysToList(list, box, 0)
 	}
@@ -269,7 +247,7 @@ func renderLaser(list *glase.List, size float64) *glase.List {
 		{cX - dX, cY - dYlow},
 	}, 2*border, true, true)
 	polys.Union()
-	polys = polys.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	polys = polyTransform(polys)
 	list = polysToList(list, polys, *hatch)
 
 	// circle
@@ -297,18 +275,18 @@ func renderLaser(list *glase.List, size float64) *glase.List {
 		}, border*.5, false, false)
 	}
 	polys.Union()
-	polys = polys.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	polys = polyTransform(polys)
 	return polysToList(list, polys, *hatch)
 }
 
 // renderText text at desired coordinates with desired font, size and
-// alignment. It applies the Transformer.
+// alignment. It applies the Transform.
 func renderText(list *glase.List, fnt *hershey.Font, x, y, size float64, banner string, align polymark.Alignment) *glase.List {
 	pen := &polymark.Pen{
 		Scribe:  *scribe,
 		Reflect: true,
 	}
-	text := pen.Text(nil, x, y, size, align, fnt, banner).Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	text := polyTransform(pen.Text(nil, x, y, size, align, fnt, banner))
 	text.Union()
 	return polysToList(list, text, *hatch)
 }
@@ -328,42 +306,46 @@ func renderQFShmoo(list *glase.List, edge float64) *glase.List {
 	}
 	_, xL, xR := fnt.Text("M")
 	scale := edge / (float64(xR-xL) * *scribe) * 0.75
-	for i := 1; i <= 10; i++ {
-		q := time.Duration(i) * time.Nanosecond
-		x := *gotoX + margin + step*(float64(i)-0.5)
-		log.Printf("q-pulse center top @ (%.1f,%.1f): %v", x, *gotoY+step-1, q)
-		list = renderText(list, fnt, x, *gotoY+step-1, scale, fmt.Sprint(i), polymark.AlignCenter|polymark.AlignAbove)
-		for j := 1; j <= 15; j++ {
-			f := 10.0 * float64(j)
-			y := *gotoY + step*(float64(j)+0.5)
-			if i == 1 {
-				log.Printf("freq (kHz) right middle @ (%.1f,%.1f): %.0f", *gotoX+margin-1, y, f)
-				list = renderText(list, fnt, *gotoX+margin-1, y, scale, fmt.Sprintf("%.0f", f), polymark.AlignRight|polymark.AlignMiddle)
+	for r := 0; r <= *repeat; r++ {
+		for i := 1; i <= 10; i++ {
+			q := time.Duration(i) * time.Nanosecond
+			x := *gotoX + margin + step*(float64(i)-0.5)
+			if r == 0 {
+				list = renderText(list, fnt, x, *gotoY+step-1, scale, fmt.Sprint(i), polymark.AlignCenter|polymark.AlignAbove)
+				log.Printf("q-pulse center top @ (%.1f,%.1f): %v", x, *gotoY+step-1, q)
 			}
-			x0, y0 := x-.5*edge, y-.5*edge
-			x1, y1 := x0+edge, y0+edge
-			var sq *polygon.Shapes
-			sq, err := sq.Append([]polygon.Point{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}...)
-			if err != nil {
-				log.Fatalf("unable to build square %f,%f <- %f,%f", x0, y0, x1, y1)
-			}
-			prof := glase.BasicProfile
-			prof.MarkSpeed = *bSpeed
-			prof.MarkFrequency = f
-			prof.MarkPowerRatio = q
+			for j := 1; j <= 15; j++ {
+				f := 10.0 * float64(j)
+				y := *gotoY + step*(float64(j)+0.5)
+				if r == 0 && i == 1 {
+					list = renderText(list, fnt, *gotoX+margin-1, y, scale, fmt.Sprintf("%.0f", f), polymark.AlignRight|polymark.AlignMiddle)
+					log.Printf("freq (kHz) right middle @ (%.1f,%.1f): %.0f", *gotoX+margin-1, y, f)
+				}
+				x0, y0 := x-.5*edge, y-.5*edge
+				x1, y1 := x0+edge, y0+edge
+				var sq *polygon.Shapes
+				sq, err = sq.Append([]polygon.Point{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}...)
+				if err != nil {
+					log.Fatalf("unable to build square %f,%f <- %f,%f", x0, y0, x1, y1)
+				}
+				prof := glase.BasicProfile
+				prof.MarkSpeed = *bSpeed
+				prof.MarkFrequency = f
+				prof.MarkPowerRatio = q
 
-			list, err = list.Start(prof)
-			if err != nil {
-				log.Fatalf("failed to start hatch profile %v: %v", prof, err)
-			}
-			sq = sq.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
-			list = polysToHatch(list, sq, *hatch)
+				list, err = list.Start(prof)
+				if err != nil {
+					log.Fatalf("failed to start hatch profile %v: %v", prof, err)
+				}
+				sq = polyTransform(sq)
+				list = polysToHatch(list, sq, *hatch)
 
-			prof = glase.BasicProfile
-			prof.MarkSpeed = *bSpeed
-			list, err = list.Start(prof)
-			if err != nil {
-				log.Fatalf("failed to restore profile %v: %v", prof, err)
+				prof = glase.BasicProfile
+				prof.MarkSpeed = *bSpeed
+				list, err = list.Start(prof)
+				if err != nil {
+					log.Fatalf("failed to restore profile %v: %v", prof, err)
+				}
 			}
 		}
 	}
@@ -397,7 +379,7 @@ func renderAruco(list *glase.List, x, y, size float64, code int) *glase.List {
 		}
 	}
 	squares.Union()
-	squares = squares.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	squares = polyTransform(squares)
 	return polysToList(list, squares, *hatch)
 }
 
@@ -427,7 +409,7 @@ func renderMesh(list *glase.List, x, y, gap float64) *glase.List {
 	if len(neg.P) != 10 {
 		log.Fatalf("expecting 10 polygons, got %d", len(neg.P))
 	}
-	neg = neg.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	neg = polyTransform(neg)
 	return polysToList(list, neg, *hatch)
 }
 
@@ -442,8 +424,8 @@ func renderPoly(list *glase.List, path string) *glase.List {
 		log.Fatalf("unable to parse %q: %v", path, err)
 	}
 	shapes := &p
-	shapes = shapes.Transform(polygon.Point{}, polygon.Point{*gotoX, *gotoY}, 0, 1)
-	shapes = shapes.Transform(Transformer.At, Transformer.To, Transformer.RotateDeg*math.Pi/180, Transformer.Scale)
+	shapes = polyAdjust(linear.Affine{Axx: 1, Ayy: 1, Dx: *gotoX, Dy: *gotoY}, shapes)
+	shapes = polyTransform(shapes)
 	return polysToList(list, shapes, *hatch)
 }
 
@@ -454,7 +436,7 @@ func main() {
 	var err error
 
 	// Write this at the end so we can get a sense of how long
-	// things took.
+	// things took from the log message timestamps.
 	defer log.Print("Done.")
 
 	ctx := context.Background()
@@ -464,7 +446,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to read %q: %v", *transform, err)
 		}
-		if err := json.Unmarshal(d, &Transformer); err != nil {
+		if err := json.Unmarshal(d, &Transform); err != nil {
 			log.Fatalf("failed to decode %q: %v", *transform, err)
 		}
 	}
@@ -587,11 +569,11 @@ func main() {
 		fromX := *gotoX - half
 		fromY := *gotoY - half
 
-		x0, y0 := Transformer.XY(fromX, fromY)
-		x1, y1 := Transformer.XY(fromX+float64(size), fromY+float64(size))
+		x0, y0 := Transform.Apply(fromX, fromY)
+		x1, y1 := Transform.Apply(fromX+float64(size), fromY+float64(size))
 
 		for i := 0; i <= size; i++ {
-			x2, y2 := Transformer.XY(fromX+float64(i), fromY+float64(i))
+			x2, y2 := Transform.Apply(fromX+float64(i), fromY+float64(i))
 			if *burn {
 				list = list.JumpXY(x0, y2).MarkXY(x1, y2).Sleep(30 * time.Microsecond)
 				list = list.JumpXY(x2, y0).MarkXY(x2, y1).Sleep(30 * time.Microsecond)
@@ -612,7 +594,7 @@ func main() {
 		}
 
 		for i := 0; i <= size; i += 10 {
-			x2, y2 := Transformer.XY(fromX+float64(i), fromY+float64(i))
+			x2, y2 := Transform.Apply(fromX+float64(i), fromY+float64(i))
 			if *burn {
 				list = list.JumpXY(x0, y2).MarkXY(x1, y2).Sleep(30 * time.Microsecond)
 				list = list.JumpXY(x2, y0).MarkXY(x2, y1).Sleep(30 * time.Microsecond)
@@ -773,7 +755,7 @@ func main() {
 		log.Fatalf("Failed to read XY: %v", err)
 	}
 	log.Printf("Current XY=(%f, %f)", x, y)
-	tX, tY := Transformer.XY(*gotoX, *gotoY)
+	tX, tY := Transform.Apply(*gotoX, *gotoY)
 	conn.GotoXY(tX, tY)
 	time.Sleep(500 * time.Millisecond)
 	x, y, err = conn.GetXY()

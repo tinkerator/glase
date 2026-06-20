@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -94,7 +94,7 @@ func (c *Conn) UploadCorrections(data []byte) error {
 	for i := 36; i < len(data)-4; i += 8 {
 		var n [2]int32
 		if _, err := binary.Decode(data[i:i+8], binary.LittleEndian, n[:2]); err != nil {
-			log.Fatalf("failed to decode correction data[%d:%d] %02x: %v", i, i+8, data[i:i+8], err)
+			return fmt.Errorf("failed to decode correction data[%d:%d] %02x: %v", i, i+8, data[i:i+8], err)
 		}
 		x, y := int32ToUInt16(n[0]), int32ToUInt16(n[1])
 		if err := c.Send(WriteCorLine, x, y, suffix); err != nil {
@@ -124,6 +124,11 @@ func (c *Conn) DeriveCorrections(path string) ([]byte, error) {
 
 	pts := make(map[Ixy]Delta)
 
+	// Xs and Ys are samples of the reflection test to center a board.
+	// Xs are points along the X-axis fold line (true Y=0).
+	// Ys are points along the Y-axis fold line (true X=0).
+	var Ys, Xs []linear.Point
+
 	for sc.Scan() {
 		line := sc.Text()
 		line = strings.TrimSpace(line)
@@ -131,6 +136,28 @@ func (c *Conn) DeriveCorrections(path string) ([]byte, error) {
 			continue // skip empty lines
 		}
 		nums := strings.Fields(line)
+		if len(nums) > 0 && strings.HasPrefix(nums[0], "#") {
+			continue // comment line
+		}
+		if len(nums) == 3 {
+			x, err := strconv.ParseFloat(nums[1], 64)
+			if err != nil {
+				return nil, err
+			}
+			y, err := strconv.ParseFloat(nums[2], 64)
+			if err != nil {
+				return nil, err
+			}
+			switch nums[0] {
+			case "X":
+				Xs = append(Xs, linear.Point{x, y})
+			case "Y":
+				Ys = append(Ys, linear.Point{x, y})
+			default:
+				return nil, fmt.Errorf("failed to parse %q ...", nums[0])
+			}
+			continue
+		}
 		if len(nums) != 4 {
 			if err != nil {
 				return nil, err
@@ -188,11 +215,11 @@ func (c *Conn) DeriveCorrections(path string) ([]byte, error) {
 				}
 				fitX, err := linear.FitPoly(2, ptsX)
 				if err != nil {
-					log.Fatalf("failed to fit X for %v: %v", ptsY, err)
+					return nil, fmt.Errorf("failed to fit X for %v: %v", ptsY, err)
 				}
 				fitY, err := linear.FitPoly(2, ptsY)
 				if err != nil {
-					log.Fatalf("failed to fit Y for %v: %v", ptsY, err)
+					return nil, fmt.Errorf("failed to fit Y for %v: %v", ptsY, err)
 				}
 				for j := -32; j <= 32; j++ {
 					pt := Ixy{i, j}
@@ -213,11 +240,11 @@ func (c *Conn) DeriveCorrections(path string) ([]byte, error) {
 				}
 				fitX, err := linear.FitPoly(2, ptsX)
 				if err != nil {
-					log.Fatalf("failed to fit X for %v: %v", ptsY, err)
+					return nil, fmt.Errorf("failed to fit X for %v: %v", ptsY, err)
 				}
 				fitY, err := linear.FitPoly(2, ptsY)
 				if err != nil {
-					log.Fatalf("failed to fit Y for %v: %v", ptsY, err)
+					return nil, fmt.Errorf("failed to fit Y for %v: %v", ptsY, err)
 				}
 				for j := -32; j <= 32; j++ {
 					pt := Ixy{j, i}
@@ -233,6 +260,60 @@ func (c *Conn) DeriveCorrections(path string) ([]byte, error) {
 	if len(pts) != 65*65 {
 		return nil, fmt.Errorf("interpolation of %d reference corrections does not yield grid of 65x65, got=%d points", refPts, len(pts))
 	}
+
+	if len(Xs) > 0 && len(Ys) > 0 {
+		fitXAxis, err := linear.FitPoly(1, Xs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fix x-axis: %v", err)
+		}
+		fitYAxis, err := linear.FitPoly(1, Ys)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fix x-axis: %v", err)
+		}
+		x0 := (fitXAxis[0] - fitYAxis[0]) / (fitYAxis[1] - fitXAxis[1])
+		y0 := fitXAxis.Expand(x0)
+		y1 := fitYAxis.Expand(x0)
+		if math.Abs(y0-y1) > linear.Zeroish {
+			return nil, fmt.Errorf("bad zero at (%g,%g or %g)", x0, y0, y1)
+		}
+		var froms, tos []linear.Point
+		for _, xy := range Xs {
+			d := linear.Point{xy.X - x0, xy.Y - y0}
+			dLen := math.Sqrt(d.X*d.X + d.Y*d.Y)
+			if xy.X < 0 {
+				dLen = -dLen
+			}
+			froms = append(froms, linear.Point{dLen, 0})
+			tos = append(tos, xy)
+		}
+		for _, xy := range Ys {
+			d := linear.Point{xy.X - x0, xy.Y - y0}
+			dLen := math.Sqrt(d.X*d.X + d.Y*d.Y)
+			if xy.Y < 0 {
+				dLen = -dLen
+			}
+			froms = append(froms, linear.Point{0, dLen})
+			tos = append(tos, xy)
+		}
+		aff, err := linear.DeriveAffine(froms, tos)
+		if err != nil {
+			return nil, fmt.Errorf("problem deriving affine: %v", err)
+		}
+		// Modify the computed deltas by the affine
+		// displacement for each 2.5 mm grid point.
+		for i := -32; i <= 32; i++ {
+			for j := -32; j <= 32; j++ {
+				pt := Ixy{i, j}
+				xi, yi := 2.5*float64(i), 2.5*float64(j)
+				x, y := aff.Apply(xi, yi)
+				delta := pts[pt]
+				delta.Dx -= x - xi
+				delta.Dy -= y - yi
+				pts[pt] = delta
+			}
+		}
+	}
+
 	buf := new(bytes.Buffer)
 	buf.Write([]byte("JCZ_COR_2_1"))
 	buf.Write(make([]byte, 17))
