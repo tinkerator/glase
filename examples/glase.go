@@ -34,7 +34,8 @@ var (
 	radius    = flag.Float64("radius", 5.0, "mm radius of --poly-star")
 	circle    = flag.Bool("circle", false, "step out a circle with the laser")
 	burn      = flag.Bool("burn", false, "burn the specified object")
-	polystar  = flag.Int("poly-star", 0, "draw a 2*n sided star (n>=3) around (--x,--y)")
+	polystar  = flag.Int("poly-star", 0, "draw n-pointed star (n>=3) around (--x,--y)")
+	npoly     = flag.Int("n-poly", 0, "draw n-sided regular poly (n>0, !=2) at (--x,--y)")
 	decode    = flag.String("decode", "", "decode the hex dump of a command list instruction")
 	dis       = flag.String("dis", "", "disassemble a stream file containing command list instructions")
 	sim       = flag.Bool("sim", false, "simulate the connection if no device is found")
@@ -413,8 +414,19 @@ func renderMesh(list *glase.List, x, y, gap float64) *glase.List {
 	return polysToList(list, neg, *hatch)
 }
 
-// Directly render some polygon.Shapes.
-func renderPoly(list *glase.List, path string) *glase.List {
+// Directly render some polygon.Shapes at (*gotoX, *gotoY).
+func renderPoly(list *glase.List, shapes *polygon.Shapes) *glase.List {
+	shapes = polyAdjust(linear.Affine{
+		Axx: 1,
+		Ayy: 1,
+		Dx:  *gotoX,
+		Dy:  *gotoY}, shapes)
+	shapes = polyTransform(shapes)
+	return polysToList(list, shapes, *hatch)
+}
+
+// Directly load and render some polygon.Shapes.
+func importPoly(list *glase.List, path string) *glase.List {
 	d, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatalf("failed to read %q: %v", path, err)
@@ -423,10 +435,7 @@ func renderPoly(list *glase.List, path string) *glase.List {
 	if err := json.Unmarshal(d, &p); err != nil {
 		log.Fatalf("unable to parse %q: %v", path, err)
 	}
-	shapes := &p
-	shapes = polyAdjust(linear.Affine{Axx: 1, Ayy: 1, Dx: *gotoX, Dy: *gotoY}, shapes)
-	shapes = polyTransform(shapes)
-	return polysToList(list, shapes, *hatch)
+	return renderPoly(list, &p)
 }
 
 func main() {
@@ -633,7 +642,33 @@ func main() {
 		}
 		list = renderMesh(list, *gotoX, *gotoY, *mesh)
 	} else if *poly != "" {
-		list = renderPoly(list, *poly)
+		list = importPoly(list, *poly)
+	} else if *npoly != 0 {
+		if *npoly <= 0 || *npoly == 2 {
+			log.Fatalf("Need --n-poly value > 0, and != 2, got %d", *npoly)
+		}
+		var s *polygon.Shapes
+		if *npoly == 1 {
+			pen := &polymark.Pen{
+				Scribe: *scribe,
+			}
+			s = pen.Circle(s, polygon.Point{}, *radius)
+		} else {
+			theta := 2 * math.Pi / float64(*npoly)
+			var pts []polygon.Point
+			for i := 0; i < *npoly; i++ {
+				ang := theta * float64(i)
+				pts = append(pts, polygon.Point{
+					X: *radius * math.Cos(ang),
+					Y: *radius * math.Sin(ang),
+				})
+			}
+			s, err = s.Append(pts...)
+			if err != nil {
+				log.Fatalf("n=%d sided polygon error: %v", *npoly, err)
+			}
+		}
+		list = renderPoly(list, s)
 	} else if *polystar != 0 {
 		if *polystar < 3 {
 			log.Fatalf("Need --poly value >= 3, got %d", *poly)

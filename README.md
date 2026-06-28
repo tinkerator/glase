@@ -272,4 +272,5 @@ The `glase` package is distributed with the same BSD 3-clause
 
 This is a hobby project, so I can't guarantee a fix, but do use the
 [github `glase` bug
-tracker](https://github.com/tinkerator/glase/issues).
+tracker](https://github.com/tinkerator/glase/issues) to report or
+discuss issues you run into.
