@@ -131,7 +131,7 @@ func polysToList(list *glase.List, polys *polygon.Shapes, hatch float64) *glase.
 		list, err = list.Start(glase.PointerProfile)
 		if err == nil && *bb {
 			repeatFrom := list.Offset()
-			list = list.JumpXY(ll.X, ll.Y).JumpXY(ll.X, tr.Y).JumpXY(tr.X, tr.Y).JumpXY(tr.X, ll.Y)
+			list = list.JumpXY(ll.X, ll.Y).JumpXY(ll.X, tr.Y).JumpXY(tr.X, tr.Y).JumpXY(tr.X, ll.Y).JumpXY(ll.X, ll.Y)
 			n, err := list.ReplayFrom(repeatFrom, 0)
 			if err != nil {
 				log.Fatalf("Failed to repeat from %d: %v", repeatFrom, err)
