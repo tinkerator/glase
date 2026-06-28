@@ -617,7 +617,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to load font %q: %v", font, err)
 		}
-		list = renderText(list, fnt, *gotoX, *gotoY, *size, *banner, polymark.AlignCenter|polymark.AlignCenter)
+		list = renderText(list, fnt, *gotoX, *gotoY, *size, *banner, polymark.AlignCenter)
 	} else if *box != "" {
 		fields := strings.Split(strings.TrimSpace(*box), ",")
 		if len(fields) != 2 {

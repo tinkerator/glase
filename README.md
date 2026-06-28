@@ -59,6 +59,45 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="9588", ATTRS{idP
 
 ## Example application
 
+The `examples/glase.go` tool is a multitool for exploring the
+laser. Here are some simple commands to get started:
+
+```
+$ go build examples/glase.go
+$ ./glase --poly-star=8 --radius=15
+```
+
+This uses the laser in _pointer_ mode to trace out an 8-pointed star
+of (`--radius` extent) 15mm around the center of the laser range,
+(0,0). You can move the star's origin with the `--x` and `--y`
+arguments:
+
+```
+$ ./glase --poly-star=8 --radius=15 --x=10 --y=-20
+```
+
+N-sided regular polygons can be similarly generated with:
+
+```
+$ ./glase --n-poly=8 --radius=15 --x=10 --y=-20
+```
+
+To render text with the pointer, you can use one of the linked
+[Hershey fonts](http://zappem.net/pub/graphics/hershey/) to display
+it:
+
+```
+$ ./glase --x -3 --y 10 --banner="Hello, Laser" --size=5
+$ ./glase --font astrology --poly-star=8 --radius=15 --x=10 --y=-20
+```
+
+All of the above commands can be acompanied with the `--burn`
+flag. This will use the laser in its destructive mode and it will burn
+what the above commands were just previewing. You can adjust the
+default burn speed with `--burn-speed`. The default speed generally
+leaves a mark. When burning, you can use the `--hatch` flag to fill
+the shapes.
+
 The `examples/glase.go` tool can be used to make a LASER caution sign. I used
 the following commands:
 
@@ -195,7 +234,7 @@ but presented a problem when scribing out traces for through-hole
 pins.
 
 To address this I developed a refinement strategy using a translucent
-plastic sheet. Mounting the sheet upward-facing and scribing some 2mm
+plastic board. Mounting the sheet upward-facing and scribing some 2mm
 x 2mm squares at symmetric points over the surface of the board, and
 then flipping the board over the Y-axis of the frame and then scribing
 the same locations on the reverse side, I found some O(mm) deviations
