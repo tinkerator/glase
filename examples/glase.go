@@ -60,6 +60,7 @@ var (
 	transform = flag.String("transform", "", "filename of json linear.Affine structure")
 	mesh      = flag.Float64("mesh", 0.0, "3x3 tiles surrounded by mesh of width --mesh (with or without --hatch --burn)")
 	poly      = flag.String("poly", "", "render polygon.Shapes from json file at (--x,--y)")
+	opoly     = flag.Bool("opoly", false, "write polygons that would render to stdout")
 )
 
 // jsonShapes outputs to os.Stdout the shapes of interest, p, in json
@@ -175,7 +176,7 @@ func polyAdjust(aff linear.Affine, p *polygon.Shapes) *polygon.Shapes {
 	for _, v := range p.P {
 		var pts []polygon.Point
 		for _, pt := range v.PS {
-			tX, tY := Transform.Apply(pt.X, pt.Y)
+			tX, tY := aff.Apply(pt.X, pt.Y)
 			pts = append(pts, polygon.Point{tX, tY})
 		}
 		sh = sh.Builder(pts...)
@@ -416,13 +417,16 @@ func renderMesh(list *glase.List, x, y, gap float64) *glase.List {
 
 // Directly render some polygon.Shapes at (*gotoX, *gotoY).
 func renderPoly(list *glase.List, shapes *polygon.Shapes) *glase.List {
-	shapes = polyAdjust(linear.Affine{
+	p := polyAdjust(linear.Affine{
 		Axx: 1,
 		Ayy: 1,
 		Dx:  *gotoX,
 		Dy:  *gotoY}, shapes)
-	shapes = polyTransform(shapes)
-	return polysToList(list, shapes, *hatch)
+	if *opoly {
+		jsonShapes(p, true)
+	}
+	p = polyTransform(p)
+	return polysToList(list, p, *hatch)
 }
 
 // Directly load and render some polygon.Shapes.
