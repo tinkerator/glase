@@ -8,7 +8,7 @@ require (
 	zappem.net/pub/graphics/hershey v0.6.0
 	zappem.net/pub/graphics/polymark v0.6.10
 	zappem.net/pub/math/linear v0.3.1
-	zappem.net/pub/math/polygon v0.9.19
+	zappem.net/pub/math/polygon v0.9.20
 )
 
 require zappem.net/pub/graphics/svgof v0.5.3 // indirect

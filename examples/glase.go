@@ -60,20 +60,25 @@ var (
 	transform = flag.String("transform", "", "filename of json linear.Affine structure")
 	mesh      = flag.Float64("mesh", 0.0, "3x3 tiles surrounded by mesh of width --mesh (with or without --hatch --burn)")
 	poly      = flag.String("poly", "", "render polygon.Shapes from json file at (--x,--y)")
-	opoly     = flag.Bool("opoly", false, "write polygons that would render to stdout")
+	opoly     = flag.String("opoly", "", "write polygons that would render to named file and exit")
+	gauge     = flag.Float64("gauge", 0.0, "render a measuring gauge of this many mms (+ve = x-axis, -ve = y-axis), centered at --x,--y")
 )
 
 // jsonShapes outputs to os.Stdout the shapes of interest, p, in json
 // format. See the zappem.net/pub/graphics/svgpoly examples/outline.go
 // code for something that can render it.
 func jsonShapes(p *polygon.Shapes, abort bool) {
-	d, err := json.Marshal(p)
+	var err error
+	if *opoly != "" {
+		err = p.JSONToFile(*opoly)
+	} else {
+		err = p.JSON(os.Stdout)
+	}
 	if err != nil {
 		log.Fatalf("failed to marshal shapes: %v", err)
 	}
-	fmt.Println(string(d))
 	if abort {
-		log.Fatal("aborting")
+		log.Fatal("aborting - with json dumped")
 	}
 }
 
@@ -415,6 +420,58 @@ func renderMesh(list *glase.List, x, y, gap float64) *glase.List {
 	return polysToList(list, neg, *hatch)
 }
 
+func renderGauge(list *glase.List, x, y, size float64) *glase.List {
+	var err error
+	if *burn {
+		p := glase.BasicProfile
+		if *burnCu {
+			p = glase.AblateCuProfile
+		} else {
+			p.MarkSpeed = *bSpeed
+		}
+		list, err = list.Start(p)
+	} else {
+		list, err = list.Start(glase.PointerProfile)
+	}
+	if err != nil {
+		log.Fatalf("failed to initialize list: %v", err)
+	}
+
+	dx, dy := 0.0, 0.0
+	if size < 0 {
+		dy = 1
+	} else {
+		dx = 1
+	}
+	from := polygon.Point{x, y}
+	delta := polygon.Point{0.1 * dx, 0.1 * dy}
+	perp := polygon.Point{-dy, -dx}
+	steps := int(math.Round(math.Abs(size) / 0.1))
+	for i := -steps; i <= steps; i++ {
+		tic := 0.2
+		if (i+1000)%5 == 0 {
+			tic = .5
+		}
+		at := from.AddX(delta, float64(i))
+		to := at.AddX(perp, tic)
+		list = list.JumpXY(at.X, at.Y)
+		if *burn {
+			list = list.MarkXY(to.X, to.Y)
+		} else {
+			list = list.JumpXY(to.X, to.Y)
+		}
+	}
+	at := from.AddX(delta, float64(-steps))
+	to := from.AddX(delta, float64(steps))
+	list = list.JumpXY(at.X, at.Y)
+	if *burn {
+		list = list.MarkXY(to.X, to.Y)
+	} else {
+		list = list.JumpXY(to.X, to.Y)
+	}
+	return list
+}
+
 // Directly render some polygon.Shapes at (*gotoX, *gotoY).
 func renderPoly(list *glase.List, shapes *polygon.Shapes) *glase.List {
 	p := polyAdjust(linear.Affine{
@@ -422,7 +479,7 @@ func renderPoly(list *glase.List, shapes *polygon.Shapes) *glase.List {
 		Ayy: 1,
 		Dx:  *gotoX,
 		Dy:  *gotoY}, shapes)
-	if *opoly {
+	if *opoly != "" {
 		jsonShapes(p, true)
 	}
 	p = polyTransform(p)
@@ -708,6 +765,8 @@ func main() {
 			}
 			log.Printf("Appended %d repetitions", n)
 		}
+	} else if *gauge != 0 {
+		list = renderGauge(list, *gotoX, *gotoY, *gauge)
 	} else if *aCode != -1 {
 		list = renderAruco(list, *gotoX, *gotoY, *size, *aCode)
 	}
@@ -768,7 +827,7 @@ func main() {
 			err = list.Run(ctx2, !*burn)
 		}()
 		if !*burn {
-			log.Printf("10 seconds of preview %v", ctx2)
+			log.Printf("%v of preview %v", *preview, ctx2)
 			time.Sleep(*preview)
 			cancel()
 			log.Print("Canceled, wait to exit")
